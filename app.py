@@ -48,7 +48,7 @@ def init_db():
                     description TEXT
                 )''')
 
-    # AUTO-MIGRATION: नए कॉलम ऑटोमैटिक जोड़ने के लिए
+    # AUTO-MIGRATION
     existing_cols = [col[1] for col in c.execute("PRAGMA table_info(accounts)").fetchall()]
     
     if "cust_name" not in existing_cols:
@@ -87,7 +87,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 2. HELPER FUNCTIONS & FIXED BALANCING LOGIC
+# 2. HELPER FUNCTIONS & BALANCING LOGIC
 # =========================================================
 def run_query(query, params=()):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -208,78 +208,23 @@ else:
 
         st.write("---")
         
-        ut_new, ut1, ut2, ut3, ut4, ut5 = st.tabs([
-            "✨ NAYA TRANSACTION (New Entry)",
-            "✍️ Banking & Cash Entry Form", 
+        ut1, ut2, ut3, ut4, ut5 = st.tabs([
+            "➕ AEPS / Cash / Deposit Transaction Entry", 
             "🔍 Customer Ledger (Aadhaar/Search)", 
             "🛠️ Daily Services Log", 
             "📋 Full Transaction History", 
             "⚙️ Opening Balance Settings"
         ])
 
-        # NEW DEDICATED TAB FOR AEPS / CASH / DEPOSIT TRANSACTIONS
-        with ut_new:
-            st.subheader("📝 नई एंट्री दर्ज करें (New Transaction Window)")
-            
-            with st.container():
-                st.info("💡 यहाँ से AEPS, Money Transfer, Cash Deposit या Customer Recovery का नया लेनदेन तुरंत दर्ज करें।")
-                
-                with st.form("new_txn_dedicated_form"):
-                    col_a, col_b = st.columns(2)
-                    
-                    with col_a:
-                        acc_choice = st.selectbox("खाते का प्रकार (Account Mode) *", ["Bank Account", "Cash"], key="new_acc_type")
-                        
-                        if acc_choice == "Bank Account":
-                            txn_choice = st.selectbox("लेनदेन का प्रकार (Transaction Category) *", [
-                                "Customer AEPS Withdrawal (बैंक बढ़ा / नकद घटा)",
-                                "Customer Deposit / Money Transfer (नकद बढ़ा / बैंक घटा)",
-                                "Self Bank Cash Withdrawal (बैंक घटा / नकद बढ़ा)",
-                                "Self Bank Cash Deposit (बैंक बढ़ा / नकद घटा)"
-                            ], key="new_bank_type")
-                        else:
-                            txn_choice = st.selectbox("लेनदेन का प्रकार (Transaction Category) *", [
-                                "Deposit (जमा)", 
-                                "Withdrawal (निकासी)", 
-                                "Customer Due Payment Received (उधार रिकवरी - Cash +)",
-                                "Personal Use / Gullak (निजी खर्च/गुल्लक)"
-                            ], key="new_cash_type")
-                        
-                        entry_amount = st.number_input("लेनदेन राशि (Amount ₹) *", min_value=0.0, step=50.0, key="new_amt")
-                        entry_tx_id = st.text_input("Txn ID / UTR / Ref Number", key="new_txid")
-
-                    with col_b:
-                        entry_cname = st.text_input("ग्राहक का नाम (Customer Name)", key="new_cname")
-                        entry_aadhaar = st.text_input("आधार के अंतिम 4 अंक (Aadhaar Last 4 Digits)", max_chars=4, key="new_adhr")
-                        
-                        if txn_choice == "Customer Due Payment Received (उधार रिकवरी - Cash +)":
-                            entry_due = 0.0
-                            st.caption("ℹ️ इस एंट्री से कस्टमर की पुरानी बाकी राशि (Due) कम हो जाएगी।")
-                        else:
-                            entry_due = st.number_input("नई उधार राशि (अगर बाकी हो) ₹", min_value=0.0, value=0.0, step=50.0, key="new_due")
-                            
-                        entry_desc = st.text_input("अतिरिक्त नोट / विवरण (Description)", key="new_desc")
-                        entry_date = st.date_input("तारीख (Transaction Date)", datetime.now(), key="new_dt")
-
-                    submit_new_txn = st.form_submit_button("🚀 नई एंट्री सेव करें (Save New Transaction)")
-                    
-                    if submit_new_txn:
-                        if entry_amount > 0:
-                            d_fmt = f"{entry_date.strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M')}"
-                            execute_db("""INSERT INTO accounts 
-                                          (username, date, type, amount, account_type, tx_id, cust_name, cust_aadhaar_last4, cust_due_amount, description) 
-                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
-                                       (user_id, d_fmt, txn_choice, entry_amount, acc_choice, entry_tx_id, entry_cname, entry_aadhaar, entry_due, entry_desc))
-                            st.success("🎉 नई एंट्री सफलतापूर्वक सेव हो गई!")
-                            st.rerun()
-                        else:
-                            st.warning("⚠️ कृपया 0 से अधिक राशि दर्ज करें!")
-
-        # TAB 1: STANDARD ENTRY FORM
+        # TAB 1: MAIN ENTRY FORM WITH RESET/NEW ENTRY OPTION
         with ut1:
             st.subheader("➕ AEPS / Cash / Deposit Transaction Entry")
             
-            with st.form("main_txn_form"):
+            # Form reset action helper
+            if st.button("🔄 New Entry / Clear Form (नया फॉर्म शुरू करें)", help="गलती से बचने के लिए फॉर्म को साफ़ करें"):
+                st.rerun()
+
+            with st.form("main_txn_form", clear_on_submit=True):
                 fc1, fc2 = st.columns(2)
                 with fc1:
                     t_account = st.selectbox("Account Type *", ["Bank Account", "Cash"])
@@ -298,7 +243,7 @@ else:
                             "Personal Use / Gullak (निजी खर्च/गुल्लक)"
                         ])
                     
-                    t_amount = st.number_input("राशि (Amount ₹) *", min_value=0.0)
+                    t_amount = st.number_input("राशि (Amount ₹) *", min_value=0.0, step=50.0)
                     t_tx_id = st.text_input("Txn / UTR / Ref No")
                 
                 with fc2:
@@ -309,20 +254,26 @@ else:
                         t_due = 0.0
                         st.info("💡 यह एंट्री कस्टमर के उधार को कम करेगी और कैश बैलेंस बढ़ाएगी।")
                     else:
-                        t_due = st.number_input("नई बाकी/उधार राशि (अगर कोई हो) ₹", min_value=0.0, value=0.0)
+                        t_due = st.number_input("नई बाकी/उधार राशि (अगर कोई हो) ₹", min_value=0.0, value=0.0, step=50.0)
                         
                     t_desc = st.text_input("अतिरिक्त नोट / विवरण")
                     t_date = st.date_input("तारीख", datetime.now())
 
-                if st.form_submit_button("✅ ट्रांजैक्शन दर्ज करें"):
+                btn_col1, btn_col2 = st.columns([2, 1])
+                with btn_col1:
+                    submit_entry = st.form_submit_button("✅ ट्रांजैक्शन दर्ज करें (Save Entry)")
+                
+                if submit_entry:
                     if t_amount > 0:
                         d_str = f"{t_date.strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M')}"
                         execute_db("""INSERT INTO accounts 
                                       (username, date, type, amount, account_type, tx_id, cust_name, cust_aadhaar_last4, cust_due_amount, description) 
                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
                                    (user_id, d_str, t_type, t_amount, t_account, t_tx_id, t_cname, t_aadhaar, t_due, t_desc))
-                        st.success("✅ लेनदेन सफलता से दर्ज हो गया!")
+                        st.success("✅ लेनदेन सफलता से दर्ज हो गया! फॉर्म नई एंट्री के लिए साफ़ हो गया है।")
                         st.rerun()
+                    else:
+                        st.warning("⚠️ कृपया 0 से अधिक राशि दर्ज करें!")
 
         # TAB 2: CUSTOMER AADHAAR LEDGER
         with ut2:
@@ -372,7 +323,7 @@ else:
         # TAB 3: DAILY SERVICES LOG
         with ut3:
             st.subheader("🛠️ आज की ऑनलाइन/सर्विस वर्क एंट्री")
-            with st.form("services_form"):
+            with st.form("services_form", clear_on_submit=True):
                 svc1, svc2 = st.columns(2)
                 with svc1:
                     s_name = st.selectbox("सर्विस चुनें *", ["PMJJBY", "PMSBY", "APY", "KYC", "CKYC", "Loan Lead", "PAN Card", "Aadhaar", "Online Service", "Other"])
