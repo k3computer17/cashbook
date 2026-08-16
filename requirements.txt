@@ -4,3 +4,4 @@ streamlit-gsheets
 openpyxl
 pdfplumber
 reportlab
+gspread
