@@ -4,9 +4,6 @@ from datetime import datetime
 import sqlite3
 import io
 import re
-import urllib.parse
-import pdfplumber
-from reportlab.pdfgen import canvas
 
 # =========================================================
 # 1. DATABASE INITIALIZATION & AUTO-MIGRATION LOGIC
@@ -91,7 +88,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 2. HELPER FUNCTIONS & AUTOMATIC BALANCING LOGIC
+# 2. HELPER FUNCTIONS & FIXED BALANCING LOGIC
 # =========================================================
 def run_query(query, params=()):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -112,45 +109,47 @@ def convert_df_to_excel(df):
         df.to_excel(writer, index=False, sheet_name='Report')
     return output.getvalue()
 
-def parse_text_or_pdf(text):
-    amount_match = re.search(r'(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{2})?)', text, re.IGNORECASE)
-    tx_match = re.search(r'(?:Txn|Ref|UPI|IMPS|UTR)\s*(?:No|ID)?[:\s]*([A-Za-z0-9]+)', text, re.IGNORECASE)
-    
-    amount = float(amount_match.group(1).replace(',', '')) if amount_match else 0.0
-    tx_id = tx_match.group(1) if tx_match else ""
-    return amount, tx_id
-
 def calculate_exact_balances(username):
+    # 1. Fetch Opening Balances
     op = run_query("SELECT * FROM opening_balances WHERE username=?", (username,))
-    cash_op = op.iloc[0]['cash_op'] if not op.empty else 0.0
-    bank_op = op.iloc[0]['bank_op'] if not op.empty else 0.0
+    cash_op = float(op.iloc[0]['cash_op']) if not op.empty else 0.0
+    bank_op = float(op.iloc[0]['bank_op']) if not op.empty else 0.0
     
+    # 2. Fetch Account & Service Data
     acc_df = run_query("SELECT * FROM accounts WHERE username=?", (username,))
     serv_df = run_query("SELECT * FROM daily_services WHERE username=?", (username,))
     
-    services_cash_income = serv_df['income_amount'].sum() if not serv_df.empty else 0.0
+    # Daily Services Income (Directly Cash Inflow)
+    services_cash_income = float(serv_df['income_amount'].sum()) if not serv_df.empty else 0.0
     
-    # Cash Entries
+    # Filter Accounts Entries
     cash_df = acc_df[acc_df['account_type'] == 'Cash'] if not acc_df.empty else pd.DataFrame()
-    cash_dep = cash_df[cash_df['type'] == 'Deposit (जमा)']['amount'].sum() if not cash_df.empty else 0.0
-    cash_wth = cash_df[cash_df['type'] == 'Withdrawal (निकासी)']['amount'].sum() if not cash_df.empty else 0.0
-    personal_gullak = cash_df[cash_df['type'] == 'Personal Use / Gullak (निजी खर्च/गुल्लक)']['amount'].sum() if not cash_df.empty else 0.0
-    
-    # Bank & AEPS/Deposit Entries
     bank_df = acc_df[acc_df['account_type'] == 'Bank Account'] if not acc_df.empty else pd.DataFrame()
-    bank_wth = bank_df[bank_df['type'] == 'Self Bank Cash Withdrawal (बैंक घटा / नकद बढ़ा)']['amount'].sum() if not bank_df.empty else 0.0
-    bank_dep = bank_df[bank_df['type'] == 'Self Bank Cash Deposit (बैंक बढ़ा / नकद घटा)']['amount'].sum() if not bank_df.empty else 0.0
-    
-    # Customer AEPS (Bank +, Cash -)
-    cust_aeps = bank_df[bank_df['type'] == 'Customer AEPS Withdrawal (बैंक बढ़ा / नकद घटा)']['amount'].sum() if not bank_df.empty else 0.0
-    
-    # Customer Deposit / Money Transfer (Cash +, Bank -)
-    cust_dep_dmt = bank_df[bank_df['type'] == 'Customer Deposit / Money Transfer (नकद बढ़ा / बैंक घटा)']['amount'].sum() if not bank_df.empty else 0.0
 
-    # BALANCING MATH
-    final_cash_closing = cash_op + cash_dep + services_cash_income + bank_wth + cust_dep_dmt - cash_wth - personal_gullak - bank_dep - cust_aeps
-    final_bank_closing = bank_op + bank_dep + cust_aeps - bank_wth - cust_dep_dmt
+    # --- Pure Cash Transactions ---
+    cash_dep = float(cash_df[cash_df['type'] == 'Deposit (जमा)']['amount'].sum()) if not cash_df.empty else 0.0
+    cash_wth = float(cash_df[cash_df['type'] == 'Withdrawal (निकासी)']['amount'].sum()) if not cash_df.empty else 0.0
+    personal_gullak = float(cash_df[cash_df['type'] == 'Personal Use / Gullak (निजी खर्च/गुल्लक)']['amount'].sum()) if not cash_df.empty else 0.0
     
+    # --- Bank & AEPS & DMT Transactions ---
+    # 1. Customer AEPS Withdrawal -> Bank IN (+), Cash OUT (-)
+    cust_aeps = float(bank_df[bank_df['type'].str.contains('Customer AEPS Withdrawal', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
+    
+    # 2. Customer Deposit / Money Transfer -> Cash IN (+), Bank OUT (-)
+    cust_dep_dmt = float(bank_df[bank_df['type'].str.contains('Customer Deposit / Money Transfer', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
+    
+    # 3. Self Bank Cash Withdrawal (बैंक से कैश निकाला) -> Cash IN (+), Bank OUT (-)
+    self_bank_wth = float(bank_df[bank_df['type'].str.contains('Self Bank Cash Withdrawal', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
+    
+    # 4. Self Bank Cash Deposit (बैंक में कैश जमा किया) -> Bank IN (+), Cash OUT (-)
+    self_bank_dep = float(bank_df[bank_df['type'].str.contains('Self Bank Cash Deposit', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
+
+    # =========================================================
+    # EXACT MATHEMATICAL FORMULA
+    # =========================================================
+    final_cash_closing = cash_op + cash_dep + services_cash_income + self_bank_wth + cust_dep_dmt - cash_wth - personal_gullak - self_bank_dep - cust_aeps
+    final_bank_closing = bank_op + self_bank_dep + cust_aeps - self_bank_wth - cust_dep_dmt
+
     return {
         "cash_op": cash_op,
         "cash_closing": final_cash_closing,
