@@ -131,16 +131,39 @@ if not st.session_state['logged_in']:
             else:
                 st.error("❌ गलत विवरण!")
 
-    with tab_admin_login:
-        a_username = st.text_input("Admin User ID", key="a_user")
-        a_password = st.text_input("Admin Password", type="password", key="a_pass")
-        if st.button("Admin Login"):
-            users_df = run_query("SELECT * FROM users WHERE username=? AND password=? AND role='Admin'", (a_username, a_password))
-            if not users_df.empty:
-                st.session_state['logged_in'] = True
-                st.session_state['user_info'] = users_df.iloc[0].to_dict()
-                st.success("✅ एडमिन लॉगिन सफल!")
-                st.rerun()
+    with admin_tab2:
+            st.subheader("⏳ पेंडिंग यूजर अप्रूवल")
+            
+            # Users और Clients टेबल को JOIN करके पूरी जानकारी निकालें
+            pending_query = """
+                SELECT u.id as user_db_id, u.username, u.client_id, 
+                       c.name, c.mobile, c.address, c.created_date 
+                FROM users u
+                LEFT JOIN clients c ON u.client_id = c.unique_client_id
+                WHERE u.is_approved = 0 AND u.role = 'Customer'
+            """
+            pending = run_query(pending_query)
+            
+            if pending.empty:
+                st.info("🎉 कोई भी पेंडिंग अप्रूवल नहीं है।")
+            else:
+                for idx, row in pending.iterrows():
+                    with st.expander(f"👤 {row['name']} ({row['username']}) - ID: {row['client_id']}", expanded=True):
+                        col_info, col_btn = st.columns([3, 1])
+                        
+                        with col_info:
+                            st.write(f"**नाम:** {row['name']}")
+                            st.write(f"**User ID:** {row['username']}")
+                            st.write(f"**Client ID:** {row['client_id']}")
+                            st.write(f"**मोबाइल:** {row['mobile']}")
+                            st.write(f"**पता:** {row['address']}")
+                            st.write(f"**रजिस्ट्रेशन तारीख:** {row['created_date']}")
+                        
+                        with col_btn:
+                            if st.button("✅ Approve करें", key=f"app_{row['user_db_id']}"):
+                                execute_db("UPDATE users SET is_approved=1 WHERE id=?", (row['user_db_id'],))
+                                st.success(f"{row['name']} का अकाउंट Approve कर दिया गया है!")
+                                st.rerun()
             else:
                 st.error("❌ गलत Admin विवरण!")
 
