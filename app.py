@@ -9,12 +9,12 @@ import pdfplumber
 from reportlab.pdfgen import canvas
 
 # =========================================================
-# 1. DATABASE INITIALIZATION & SCHEMA UPDATES
+# 1. DATABASE INITIALIZATION & AUTO-MIGRATION LOGIC
 # =========================================================
 DB_NAME = "local_cashbook.db"
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
     
     # Users Table
@@ -37,7 +37,7 @@ def init_db():
                     created_date TEXT
                 )''')
     
-    # Accounts / Cashbook Table with Aadhaar Support
+    # Accounts / Cashbook Table
     c.execute('''CREATE TABLE IF NOT EXISTS accounts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT,
@@ -51,7 +51,17 @@ def init_db():
                     cust_due_amount REAL DEFAULT 0.0,
                     description TEXT
                 )''')
+
+    # AUTO-MIGRATION: पुराने टेबल में नए कॉलम ऑटोमैटिक जोड़ने के लिए
+    existing_cols = [col[1] for col in c.execute("PRAGMA table_info(accounts)").fetchall()]
     
+    if "cust_name" not in existing_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN cust_name TEXT")
+    if "cust_aadhaar_last4" not in existing_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN cust_aadhaar_last4 TEXT")
+    if "cust_due_amount" not in existing_cols:
+        c.execute("ALTER TABLE accounts ADD COLUMN cust_due_amount REAL DEFAULT 0.0")
+
     # Daily Services Log Table
     c.execute('''CREATE TABLE IF NOT EXISTS daily_services (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +80,7 @@ def init_db():
                     bank_op REAL DEFAULT 0.0
                 )''')
     
-    # Default Admin
+    # Default Admin Entry
     c.execute("SELECT * FROM users WHERE username='admin'")
     if not c.fetchone():
         c.execute("INSERT INTO users (username, password, role, is_approved) VALUES ('admin', 'admin123', 'Admin', 1)")
@@ -84,13 +94,13 @@ init_db()
 # 2. HELPER FUNCTIONS & AUTOMATIC BALANCING LOGIC
 # =========================================================
 def run_query(query, params=()):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     return df
 
 def execute_db(query, params=()):
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
     c.execute(query, params)
     conn.commit()
@@ -325,7 +335,7 @@ else:
 
             st.dataframe(run_query("SELECT date, service_name, ref_no, income_amount, notes FROM daily_services WHERE username=? ORDER BY id DESC", (user_id,)), use_container_width=True)
 
-        # TAB 4: ALL TRANSACTIONS & EDIT/DELETE
+        # TAB 4: ALL TRANSACTIONS & DELETE
         with ut4:
             st.subheader("📋 आपकी पूरी कैशबुक एंट्रीज")
             all_txns = run_query("SELECT id, date, account_type, type, amount, cust_name, cust_aadhaar_last4, cust_due_amount, tx_id, description FROM accounts WHERE username=? ORDER BY id DESC", (user_id,))
