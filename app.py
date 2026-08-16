@@ -1,78 +1,96 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import streamlit.components.v1 as components
-from streamlit_gsheets import GSheetsConnection
-import urllib.parse
-import pdfplumber
+import sqlite3
+import os
 import io
-from reportlab.lib.pagesizes import letter, A4
+import pdfplumber
 from reportlab.pdfgen import canvas
 
 # =========================================================
-# 1. PAGE CONFIG & BRANDING
+# 1. LOCAL DATABASE INITIALIZATION (PC Server Setup)
 # =========================================================
-st.set_page_config(
-    page_title="NIKA Accounting & ID/Passbook Portal", 
-    page_icon="📄", 
-    layout="wide"
-)
+DB_NAME = "local_cashbook.db"
 
-MY_CONTACT = "8358013017"  # Admin WhatsApp Number
-GSHEET_URL = "https://docs.google.com/spreadsheets/d/1GXHT4rDTIu7KghR29PkA0S9AfXTE0mgcKVghTxF63bg/edit?usp=sharing"
+def init_db():
+    """अपने PC पर SQLite डेटाबेस और टेबल ऑटोमैटिक बनाएगा"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # Users Table
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE,
+                    password TEXT,
+                    role TEXT,
+                    client_id TEXT,
+                    is_approved INTEGER DEFAULT 0
+                )''')
+    
+    # Clients Table
+    c.execute('''CREATE TABLE IF NOT EXISTS clients (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    unique_client_id TEXT,
+                    name TEXT,
+                    mobile TEXT,
+                    address TEXT,
+                    created_date TEXT
+                )''')
+    
+    # Accounts/Ledger Table
+    c.execute('''CREATE TABLE IF NOT EXISTS accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT,
+                    date TEXT,
+                    type TEXT,
+                    amount REAL,
+                    description TEXT
+                )''')
+    
+    # Default Admin (अगर पहले से नहीं है)
+    c.execute("SELECT * FROM users WHERE username='admin'")
+    if not c.fetchone():
+        c.execute("INSERT INTO users (username, password, role, is_approved) VALUES ('admin', 'admin123', 'Admin', 1)")
+    
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # =========================================================
-# 2. GOOGLE SHEETS CONNECTION & HELPER FUNCTIONS
+# 2. HELPER FUNCTIONS FOR LOCAL DB
 # =========================================================
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-except Exception as e:
-    st.error("Google Sheets Connection Error! Streamlit Secrets check karein.")
+def run_query(query, params=()):
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+    return df
 
-def load_sheet(sheet_name):
-    """Read data from Google Sheets safely"""
-    try:
-        df = conn.read(spreadsheet=GSHEET_URL, worksheet=sheet_name, ttl=0)
-        return df if df is not None else pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
+def execute_db(query, params=()):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute(query, params)
+    conn.commit()
+    conn.close()
 
-def save_sheet(sheet_name, df):
-    """Write/Update data in Google Sheets"""
-    try:
-        conn.update(spreadsheet=GSHEET_URL, worksheet=sheet_name, data=df)
-    except Exception as e:
-        st.error(f"डेटा अपडेट करने में समस्या आई: {e}")
-
-def create_whatsapp_link(mobile, text_msg):
-    return f"https://wa.me/{mobile}?text={urllib.parse.quote(text_msg)}"
-
-def generate_auto_client_id(clients_df):
-    count = len(clients_df) if not clients_df.empty else 0
-    return f"NK-CUST-{1001 + count}"
-
-# --- HELPER: GENERATE ID CARD PDF ---
 def generate_id_card_pdf(name, client_id, mobile, address):
     buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=(250, 160)) # ID Card Dimensions
+    c = canvas.Canvas(buffer, pagesize=(250, 160))
     c.rect(5, 5, 240, 150)
     c.setFont("Helvetica-Bold", 12)
     c.drawString(20, 135, "NIKA SERVICES - ID CARD")
     c.setLineWidth(0.5)
     c.line(20, 128, 230, 128)
-    
     c.setFont("Helvetica", 10)
     c.drawString(20, 105, f"ID No: {client_id}")
     c.drawString(20, 85, f"Name: {name}")
     c.drawString(20, 65, f"Mobile: {mobile}")
-    c.drawString(20, 45, f"Address: {address[:25]}...")
-    
+    c.drawString(20, 45, f"Address: {str(address)[:25]}...")
     c.showPage()
     c.save()
     buffer.seek(0)
     return buffer
 
-# --- HELPER: EXCEL CONVERTER ---
 def convert_df_to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -80,121 +98,80 @@ def convert_df_to_excel(df):
     return output.getvalue()
 
 # =========================================================
-# 3. AUTHENTICATION & SESSION STATE INITIALIZATION
+# 3. PAGE CONFIG & SESSION
 # =========================================================
+st.set_page_config(page_title="Local Cashbook & ID Generator", page_icon="💻", layout="wide")
+
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'user_info' not in st.session_state:
     st.session_state['user_info'] = None
 
-st.title("📄 NIKA Multi-Service, Accounts & ID Generator")
-
-# Load Worksheets Data
-users_df = load_sheet("users")
-clients_df = load_sheet("Clients")
-accounts_df = load_sheet("Accounts")  # Daily Accounts Sheet
+st.title("💻 PC Local Accounting & ID Generator")
 
 # =========================================================
-# 4. LOGIN & NEW REGISTRATION
+# 4. LOGIN & REGISTRATION
 # =========================================================
 if not st.session_state['logged_in']:
-    tab_user_login, tab_admin_login, reg_tab = st.tabs([
-        "👤 User Login", 
-        "🔐 Admin Login", 
-        "📝 New Registration"
-    ])
+    tab_user_login, tab_admin_login, reg_tab = st.tabs(["👤 User Login", "🔐 Admin Login", "📝 New Registration"])
 
-    # ---------------- USER LOGIN ----------------
     with tab_user_login:
-        st.subheader("👤 यूजर लॉगिन")
-        c_username = st.text_input("User ID", key="c_login_user")
-        c_password = st.text_input("Password", type="password", key="c_login_pass")
-        
-        if st.button("🚀 User Login", key="c_login_btn"):
+        c_username = st.text_input("User ID", key="c_user")
+        c_password = st.text_input("Password", type="password", key="c_pass")
+        if st.button("User Login"):
+            users_df = run_query("SELECT * FROM users WHERE username=? AND password=? AND role='Customer'", (c_username, c_password))
             if not users_df.empty:
-                user_match = users_df[
-                    (users_df['username'].astype(str) == c_username) & 
-                    (users_df['password'].astype(str) == c_password) & 
-                    (users_df['role'].astype(str) == "Customer")
-                ]
-                if not user_match.empty:
-                    user_row = user_match.iloc[0]
-                    if int(user_row.get('is_approved', 0)) == 1:
-                        st.session_state['logged_in'] = True
-                        st.session_state['user_info'] = user_row.to_dict()
-                        st.success("✅ लॉगिन सफल हुआ!")
-                        st.rerun()
-                    else:
-                        st.warning("⚠️ आपका खाता अभी स्वीकृति (Approval) के लिए पेंडिंग है।")
-                else:
-                    st.error("❌ गलत Username या Password!")
-
-    # ---------------- ADMIN LOGIN ----------------
-    with tab_admin_login:
-        st.subheader("🔐 एडमिन लॉगिन")
-        a_username = st.text_input("Admin User ID", key="a_login_user")
-        a_password = st.text_input("Admin Password", type="password", key="a_login_pass")
-        
-        if st.button("👑 Admin Login", key="a_login_btn"):
-            if not users_df.empty:
-                user_match = users_df[
-                    (users_df['username'].astype(str) == a_username) & 
-                    (users_df['password'].astype(str) == a_password) & 
-                    (users_df['role'].astype(str) == "Admin")
-                ]
-                if not user_match.empty:
+                if users_df.iloc[0]['is_approved'] == 1:
                     st.session_state['logged_in'] = True
-                    st.session_state['user_info'] = user_match.iloc[0].to_dict()
-                    st.success("✅ एडमिन लॉगिन सफल ہوا!")
+                    st.session_state['user_info'] = users_df.iloc[0].to_dict()
+                    st.success("✅ लॉगिन सफल!")
                     st.rerun()
-
-    # ---------------- NEW REGISTRATION ----------------
-    with reg_tab:
-        st.subheader("📝 नया अकाउंट रजिस्ट्रेशन")
-        auto_id = generate_auto_client_id(clients_df)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            c_name = st.text_input("👤 पूरा नाम *")
-            c_mobile = st.text_input("📱 मोबाइल नंबर *")
-        with col2:
-            c_userid = st.text_input("🧑‍💻 User ID बनाएं *")
-            c_pass = st.text_input("🔑 Password बनाएं *", type="password")
-
-        c_address = st.text_area("🏠 पता *")
-
-        if st.button("✨ Register Account"):
-            if not all([c_name, c_userid, c_pass, c_mobile, c_address]):
-                st.error("कृपया सभी जानकारी भरें!")
+                else:
+                    st.warning("⚠️ आपका अकाउंट अभी पेंडिंग है।")
             else:
-                today = datetime.now().strftime("%Y-%m-%d")
-                new_client = {
-                    "id": len(clients_df) + 1,
-                    "unique_client_id": auto_id,
-                    "name": c_name,
-                    "mobile": c_mobile,
-                    "address": c_address,
-                    "created_date": today
-                }
-                save_sheet("Clients", pd.concat([clients_df, pd.DataFrame([new_client])], ignore_index=True))
+                st.error("❌ गलत विवरण!")
 
-                new_user = {
-                    "id": len(users_df) + 1,
-                    "username": c_userid,
-                    "password": c_pass,
-                    "role": "Customer",
-                    "client_id": auto_id,
-                    "is_approved": 0
-                }
-                save_sheet("users", pd.concat([users_df, pd.DataFrame([new_user])], ignore_index=True))
+    with tab_admin_login:
+        a_username = st.text_input("Admin User ID", key="a_user")
+        a_password = st.text_input("Admin Password", type="password", key="a_pass")
+        if st.button("Admin Login"):
+            users_df = run_query("SELECT * FROM users WHERE username=? AND password=? AND role='Admin'", (a_username, a_password))
+            if not users_df.empty:
+                st.session_state['logged_in'] = True
+                st.session_state['user_info'] = users_df.iloc[0].to_dict()
+                st.success("✅ एडमिन लॉगिन सफल!")
+                st.rerun()
+            else:
+                st.error("❌ गलत Admin विवरण!")
+
+    with reg_tab:
+        c_name = st.text_input("नाम *")
+        c_mobile = st.text_input("मोबाइल *")
+        c_userid = st.text_input("User ID बनाएं *")
+        c_pass = st.text_input("Password बनाएं *", type="password")
+        c_address = st.text_area("पता *")
+
+        if st.button("Register Account"):
+            if all([c_name, c_mobile, c_userid, c_pass, c_address]):
+                auto_id = f"NK-CUST-{1001 + len(run_query('SELECT * FROM clients'))}"
+                today = datetime.now().strftime("%Y-%m-%d")
+                
+                execute_db("INSERT INTO clients (unique_client_id, name, mobile, address, created_date) VALUES (?, ?, ?, ?, ?)",
+                           (auto_id, c_name, c_mobile, c_address, today))
+                
+                execute_db("INSERT INTO users (username, password, role, client_id, is_approved) VALUES (?, ?, 'Customer', ?, 0)",
+                           (c_userid, c_pass, auto_id))
+                
                 st.success(f"✅ रजिस्ट्रेशन सफल हुआ! ID: {auto_id}")
+            else:
+                st.error("सभी फील्ड भरें!")
 
 # =========================================================
-# 5. AUTHENTICATED PORTAL
+# 5. DASHBOARD (USER & ADMIN)
 # =========================================================
 else:
-    st.sidebar.write(f"Logged in: **{st.session_state['user_info']['username']}** ({st.session_state['user_info']['role']})")
-    if st.sidebar.button("🚪 Logout"):
+    st.sidebar.write(f"Logged in: **{st.session_state['user_info']['username']}**")
+    if st.sidebar.button("Logout"):
         st.session_state['logged_in'] = False
         st.session_state['user_info'] = None
         st.rerun()
@@ -202,117 +179,56 @@ else:
     user_role = st.session_state['user_info']['role']
     user_id = st.session_state['user_info']['username']
 
-    # ---------------------------------------------------------
-    # USER DASHBOARD
-    # ---------------------------------------------------------
     if user_role == "Customer":
-        u_tab1, u_tab2, u_tab3 = st.tabs(["📊 दैनिक हिसाब-किताब", "📁 PDF अपलोड व ID Generator", "📥 Excel डाउनलोड"])
+        u_tab1, u_tab2, u_tab3 = st.tabs(["📊 दैनिक हिसाब", "📁 PDF & ID Card", "📥 Excel Download"])
 
-        # ------------ 1. DAILY ACCOUNTS ------------
         with u_tab1:
-            st.subheader("📊 दैनिक आय-व्यय ट्रैकर")
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                t_type = st.selectbox("प्रकार", ["Income (आय)", "Expense (खर्च)"])
-            with col_b:
-                t_amount = st.number_input("राशि (₹)", min_value=1.0, step=10.0)
-            with col_c:
-                t_desc = st.text_input("विवरण (Note)")
+            t_type = st.selectbox("प्रकार", ["Income (आय)", "Expense (खर्च)"])
+            t_amount = st.number_input("राशि (₹)", min_value=1.0)
+            t_desc = st.text_input("विवरण")
 
-            if st.button("➕ एंट्री सेव करें"):
-                new_entry = {
-                    "username": user_id,
-                    "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "type": t_type,
-                    "amount": t_amount,
-                    "description": t_desc
-                }
-                updated_acc = pd.concat([accounts_df, pd.DataFrame([new_entry])], ignore_index=True)
-                save_sheet("Accounts", updated_acc)
-                st.success("✅ हिसाब सेव हो गया!")
+            if st.button("सेव करें"):
+                execute_db("INSERT INTO accounts (username, date, type, amount, description) VALUES (?, ?, ?, ?, ?)",
+                           (user_id, datetime.now().strftime("%Y-%m-%d %H:%M"), t_type, t_amount, t_desc))
+                st.success("✅ हिसाब आपके PC पर सेव हो गया!")
                 st.rerun()
 
-            st.markdown("---")
-            st.subheader("📋 आपकी पुरानी एंट्रीज")
-            if not accounts_df.empty and 'username' in accounts_df.columns:
-                my_acc = accounts_df[accounts_df['username'] == user_id]
-                st.dataframe(my_acc, use_container_width=True)
+            st.subheader("आपका हिसाब")
+            st.dataframe(run_query("SELECT date, type, amount, description FROM accounts WHERE username=?", (user_id,)), use_container_width=True)
 
-        # ------------ 2. PDF UPLOAD & ID CARD GENERATOR ------------
         with u_tab2:
-            st.subheader("📁 नया PDF अपलोड करें (डेटा एक्सट्रैक्शन)")
-            uploaded_pdf = st.file_uploader("PDF फ़ाइल चुनें", type=["pdf"])
-
-            if uploaded_pdf is not None:
+            uploaded_pdf = st.file_uploader("PDF अपलोड करें", type=["pdf"])
+            if uploaded_pdf:
                 with pdfplumber.open(uploaded_pdf) as pdf:
-                    extracted_text = ""
-                    for page in pdf.pages:
-                        extracted_text += page.extract_text() or ""
-                
-                st.success("✅ PDF से डेटा एक्सट्रैक्ट हो गया!")
-                st.text_area("एक्सट्रैक्ट किया गया टेक्स्ट:", extracted_text, height=150)
+                    text = "".join([page.extract_text() or "" for page in pdf.pages])
+                st.text_area("एक्सट्रैक्ट टेक्स्ट:", text, height=150)
 
-            st.markdown("---")
-            st.subheader("🪪 ID Card / Passbook जनरेट करें")
-            client_data = clients_df[clients_df['unique_client_id'] == st.session_state['user_info'].get('client_id')] if not clients_df.empty else pd.DataFrame()
+            st.subheader("ID Card Generator")
+            client_df = run_query("SELECT * FROM clients WHERE unique_client_id=?", (st.session_state['user_info'].get('client_id'),))
+            if not client_df.empty:
+                c_row = client_df.iloc[0]
+                pdf = generate_id_card_pdf(c_row['name'], c_row['unique_client_id'], c_row['mobile'], c_row['address'])
+                st.download_button("🪪 ID Card Download करें", data=pdf, file_name=f"ID_{c_row['unique_client_id']}.pdf")
 
-            if not client_data.empty:
-                c_row = client_data.iloc[0]
-                pdf_bytes = generate_id_card_pdf(c_row['name'], c_row['unique_client_id'], c_row['mobile'], c_row['address'])
-                
-                st.download_button(
-                    label="🪪 ID Card PDF डाउनलोड करें",
-                    data=pdf_bytes,
-                    file_name=f"ID_Card_{c_row['unique_client_id']}.pdf",
-                    mime="application/pdf"
-                )
-
-        # ------------ 3. EXCEL DOWNLOAD ------------
         with u_tab3:
-            st.subheader("📥 अपना डेटा Excel में डाउनलोड करें")
-            if not accounts_df.empty and 'username' in accounts_df.columns:
-                my_acc = accounts_df[accounts_df['username'] == user_id]
-                excel_data = convert_df_to_excel(my_acc)
-                st.download_button(
-                    label="📊 Accounts Data (Excel) डाउनलोड करें",
-                    data=excel_data,
-                    file_name=f"My_Accounts_{user_id}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            my_acc = run_query("SELECT * FROM accounts WHERE username=?", (user_id,))
+            if not my_acc.empty:
+                st.download_button("📊 Excel डेटा डाउनलोड करें", data=convert_df_to_excel(my_acc), file_name="My_Accounts.xlsx")
 
-    # ---------------------------------------------------------
-    # MASTER ADMIN DASHBOARD
-    # ---------------------------------------------------------
     elif user_role == "Admin":
-        st.sidebar.title("👑 Master Admin Control")
-        admin_choice = st.sidebar.radio("Navigation", ["👥 सभी यूजर्स का डेटा", "⚙️ Approvals", "📊 मास्टर Excel डाउनलोड"])
+        st.title("👑 Master Admin Control")
+        admin_tab1, admin_tab2 = st.tabs(["📊 सभी यूजर्स का डेटा", "⚙️ Approvals"])
 
-        if admin_choice == "👥 सभी यूजर्स का डेटा":
-            st.title("👥 सभी यूजर्स का हिसाब-किताब")
-            st.dataframe(accounts_df, use_container_width=True)
+        with admin_tab1:
+            st.dataframe(run_query("SELECT * FROM accounts"), use_container_width=True)
+            st.download_button("📥 Master Excel डाउनलोड", data=convert_df_to_excel(run_query("SELECT * FROM accounts")), file_name="Master_Data.xlsx")
 
-        elif admin_choice == "⚙️ Approvals":
-            st.title("⚙️ Pending Approvals")
-            if not users_df.empty and 'is_approved' in users_df.columns:
-                pending = users_df[users_df['is_approved'].fillna(0).astype(int) == 0]
-                for idx, row in pending.iterrows():
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.write(f"User: **{row['username']}** | Client ID: {row.get('client_id')}")
-                    with col2:
-                        if st.button(f"Approve", key=f"app_{row['id']}"):
-                            users_df.loc[users_df['id'] == row['id'], 'is_approved'] = 1
-                            save_sheet("users", users_df)
-                            st.success("Approved!")
-                            st.rerun()
-
-        elif admin_choice == "📊 मास्टर Excel डाउनलोड":
-            st.title("📊 पूरे सिस्टम का Excel डेटा")
-            if not accounts_df.empty:
-                master_excel = convert_df_to_excel(accounts_df)
-                st.download_button(
-                    label="📥 पूरा Accounts Data Excel में डाउनलोड करें",
-                    data=master_excel,
-                    file_name="Master_Accounts_Data.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        with admin_tab2:
+            pending = run_query("SELECT * FROM users WHERE is_approved=0")
+            for idx, row in pending.iterrows():
+                col1, col2 = st.columns([3, 1])
+                col1.write(f"User: **{row['username']}** | Client ID: {row['client_id']}")
+                if col2.button("Approve", key=f"app_{row['id']}"):
+                    execute_db("UPDATE users SET is_approved=1 WHERE id=?", (row['id'],))
+                    st.success("Approved!")
+                    st.rerun()
