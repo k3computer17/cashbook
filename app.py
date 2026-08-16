@@ -43,9 +43,9 @@ def init_db():
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT,
                     date TEXT,
-                    type TEXT,            -- 'Deposit', 'Withdrawal', 'Personal Use / Gullak'
+                    type TEXT,            
                     amount REAL,
-                    account_type TEXT,    -- 'Cash', 'Bank Account'
+                    account_type TEXT,    
                     tx_id TEXT,
                     description TEXT
                 )''')
@@ -79,7 +79,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 2. HELPER FUNCTIONS & BALANCING LOGIC
+# 2. HELPER FUNCTIONS & AUTOMATIC BALANCING LOGIC
 # =========================================================
 def run_query(query, params=()):
     conn = sqlite3.connect(DB_NAME)
@@ -134,23 +134,36 @@ def calculate_exact_balances(username):
     acc_df = run_query("SELECT * FROM accounts WHERE username=?", (username,))
     serv_df = run_query("SELECT * FROM daily_services WHERE username=?", (username,))
     
-    # Services Income (Adds directly to Cash)
+    # Daily Services Income (Adds directly to Cash)
     services_cash_income = serv_df['income_amount'].sum() if not serv_df.empty else 0.0
     
-    # Cash Entries
+    # General Cash Transactions
     cash_df = acc_df[acc_df['account_type'] == 'Cash'] if not acc_df.empty else pd.DataFrame()
     cash_dep = cash_df[cash_df['type'] == 'Deposit (जमा)']['amount'].sum() if not cash_df.empty else 0.0
     cash_wth = cash_df[cash_df['type'] == 'Withdrawal (निकासी)']['amount'].sum() if not cash_df.empty else 0.0
     personal_gullak = cash_df[cash_df['type'] == 'Personal Use / Gullak (निजी खर्च/गुल्लक)']['amount'].sum() if not cash_df.empty else 0.0
     
-    # Bank Entries
+    # Bank & AEPS Transactions
     bank_df = acc_df[acc_df['account_type'] == 'Bank Account'] if not acc_df.empty else pd.DataFrame()
+    
+    # Own Bank Cash Withdrawal (Self Bank se Cash nikala) -> Bank(-), Cash(+)
     bank_wth = bank_df[bank_df['type'] == 'Withdrawal (बैंक से पैसा निकाला / Cash Laye)']['amount'].sum() if not bank_df.empty else 0.0
+    
+    # Own Bank Cash Deposit (Bank me Cash jamha kiya) -> Bank(+), Cash(-)
     bank_dep = bank_df[bank_df['type'] == 'Deposit (बैंक में जमा किया)']['amount'].sum() if not bank_df.empty else 0.0
     
-    # Balancing Math
-    final_cash_closing = cash_op + cash_dep + services_cash_income + bank_wth - cash_wth - personal_gullak - bank_dep
-    final_bank_closing = bank_op + bank_dep - bank_wth
+    # Customer AEPS/Micro ATM Withdrawal -> Bank(+), Cash(-) AUTOMATIC
+    cust_aeps_wth = bank_df[bank_df['type'] == 'Customer AEPS Withdrawal (बैंक बढ़ा / नकद घटा)']['amount'].sum() if not bank_df.empty else 0.0
+    
+    # Customer Cash Deposit -> Bank(-), Cash(+) AUTOMATIC
+    cust_cash_dep = bank_df[bank_df['type'] == 'Customer Money Transfer / Deposit (बैंक घटा / नकद बढ़ा)']['amount'].sum() if not bank_df.empty else 0.0
+
+    # AUTOMATIC BALANCING MATH
+    # Cash Closing = Cash OP + General Dep + Services Income + Self Bank Cash Withdrawal + Cust Money Transfer - General Wth - Personal Gullak - Self Bank Deposit - Cust AEPS Withdrawal
+    final_cash_closing = cash_op + cash_dep + services_cash_income + bank_wth + cust_cash_dep - cash_wth - personal_gullak - bank_dep - cust_aeps_wth
+    
+    # Bank Closing = Bank OP + Self Bank Deposit + Cust AEPS Withdrawal - Self Bank Cash Withdrawal - Cust Money Transfer
+    final_bank_closing = bank_op + bank_dep + cust_aeps_wth - bank_wth - cust_cash_dep
     
     return {
         "cash_op": cash_op,
@@ -258,9 +271,11 @@ else:
             with st.form("cash_bank_form"):
                 fc1, fc2 = st.columns(2)
                 with fc1:
-                    t_account = st.selectbox("Account Type", ["Cash", "Bank Account"])
+                    t_account = st.selectbox("Account Type", ["Bank Account", "Cash"])
                     if t_account == "Bank Account":
                         t_type = st.selectbox("लेनदेन का प्रकार", [
+                            "Customer AEPS Withdrawal (बैंक बढ़ा / नकद घटा)",
+                            "Customer Money Transfer / Deposit (बैंक घटा / नकद बढ़ा)",
                             "Withdrawal (बैंक से पैसा निकाला / Cash Laye)", 
                             "Deposit (बैंक में जमा किया)"
                         ])
@@ -333,9 +348,14 @@ else:
                 with st.expander(f"⚙️ Entry ID #{selected_id} संपादित करें"):
                     e_col1, e_col2 = st.columns(2)
                     with e_col1:
-                        e_acc = st.selectbox("Account Type", ["Cash", "Bank Account"], index=0 if row_to_edit['account_type']=="Cash" else 1)
+                        e_acc = st.selectbox("Account Type", ["Bank Account", "Cash"], index=0 if row_to_edit['account_type']=="Bank Account" else 1)
                         if e_acc == "Bank Account":
-                            e_type = st.selectbox("Type", ["Withdrawal (बैंक से पैसा निकाला / Cash Laye)", "Deposit (बैंक में जमा किया)"])
+                            e_type = st.selectbox("Type", [
+                                "Customer AEPS Withdrawal (बैंक बढ़ा / नकद घटा)",
+                                "Customer Money Transfer / Deposit (बैंक घटा / नकद बढ़ा)",
+                                "Withdrawal (बैंक से पैसा निकाला / Cash Laye)", 
+                                "Deposit (बैंक में जमा किया)"
+                            ])
                         else:
                             e_type = st.selectbox("Type", ["Deposit (जमा)", "Withdrawal (निकासी)", "Personal Use / Gullak (निजी खर्च/गुल्लक)"])
                         
