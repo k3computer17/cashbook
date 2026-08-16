@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime
 import sqlite3
 import io
-import re
 
 # =========================================================
 # 1. DATABASE INITIALIZATION & AUTO-MIGRATION LOGIC
@@ -49,7 +48,7 @@ def init_db():
                     description TEXT
                 )''')
 
-    # AUTO-MIGRATION
+    # AUTO-MIGRATION: नए कॉलम ऑटोमैटिक जोड़ने के लिए
     existing_cols = [col[1] for col in c.execute("PRAGMA table_info(accounts)").fetchall()]
     
     if "cust_name" not in existing_cols:
@@ -88,7 +87,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 2. HELPER FUNCTIONS & BALANCING LOGIC
+# 2. HELPER FUNCTIONS & FIXED BALANCING LOGIC
 # =========================================================
 def run_query(query, params=()):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -110,37 +109,28 @@ def convert_df_to_excel(df):
     return output.getvalue()
 
 def calculate_exact_balances(username):
-    # Fetch Opening Balances
     op = run_query("SELECT * FROM opening_balances WHERE username=?", (username,))
     cash_op = float(op.iloc[0]['cash_op']) if not op.empty else 0.0
     bank_op = float(op.iloc[0]['bank_op']) if not op.empty else 0.0
     
-    # Fetch Account & Service Data
     acc_df = run_query("SELECT * FROM accounts WHERE username=?", (username,))
     serv_df = run_query("SELECT * FROM daily_services WHERE username=?", (username,))
     
-    # Daily Services Income (Directly Cash Inflow)
     services_cash_income = float(serv_df['income_amount'].sum()) if not serv_df.empty else 0.0
     
-    # Filter Accounts Entries
     cash_df = acc_df[acc_df['account_type'] == 'Cash'] if not acc_df.empty else pd.DataFrame()
     bank_df = acc_df[acc_df['account_type'] == 'Bank Account'] if not acc_df.empty else pd.DataFrame()
 
-    # Cash Entries
     cash_dep = float(cash_df[cash_df['type'] == 'Deposit (जमा)']['amount'].sum()) if not cash_df.empty else 0.0
     cash_wth = float(cash_df[cash_df['type'] == 'Withdrawal (निकासी)']['amount'].sum()) if not cash_df.empty else 0.0
     personal_gullak = float(cash_df[cash_df['type'] == 'Personal Use / Gullak (निजी खर्च/गुल्लक)']['amount'].sum()) if not cash_df.empty else 0.0
-    
-    # Due Recovery Received in Cash (कस्टमर से मिली बाकी राशि - Cash +)
     due_recovered_cash = float(cash_df[cash_df['type'] == 'Customer Due Payment Received (उधार रिकवरी - Cash +)']['amount'].sum()) if not cash_df.empty else 0.0
     
-    # Bank & AEPS & DMT Transactions
     cust_aeps = float(bank_df[bank_df['type'].str.contains('Customer AEPS Withdrawal', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
     cust_dep_dmt = float(bank_df[bank_df['type'].str.contains('Customer Deposit / Money Transfer', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
     self_bank_wth = float(bank_df[bank_df['type'].str.contains('Self Bank Cash Withdrawal', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
     self_bank_dep = float(bank_df[bank_df['type'].str.contains('Self Bank Cash Deposit', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
 
-    # BALANCING MATHEMATICS
     final_cash_closing = cash_op + cash_dep + services_cash_income + self_bank_wth + cust_dep_dmt + due_recovered_cash - cash_wth - personal_gullak - self_bank_dep - cust_aeps
     final_bank_closing = bank_op + self_bank_dep + cust_aeps - self_bank_wth - cust_dep_dmt
 
@@ -218,15 +208,74 @@ else:
 
         st.write("---")
         
-        ut1, ut2, ut3, ut4, ut5 = st.tabs([
-            "✍️ Banking & Cash Entry", 
+        ut_new, ut1, ut2, ut3, ut4, ut5 = st.tabs([
+            "✨ NAYA TRANSACTION (New Entry)",
+            "✍️ Banking & Cash Entry Form", 
             "🔍 Customer Ledger (Aadhaar/Search)", 
             "🛠️ Daily Services Log", 
             "📋 Full Transaction History", 
             "⚙️ Opening Balance Settings"
         ])
 
-        # TAB 1: ENTRY FORM
+        # NEW DEDICATED TAB FOR AEPS / CASH / DEPOSIT TRANSACTIONS
+        with ut_new:
+            st.subheader("📝 नई एंट्री दर्ज करें (New Transaction Window)")
+            
+            with st.container():
+                st.info("💡 यहाँ से AEPS, Money Transfer, Cash Deposit या Customer Recovery का नया लेनदेन तुरंत दर्ज करें।")
+                
+                with st.form("new_txn_dedicated_form"):
+                    col_a, col_b = st.columns(2)
+                    
+                    with col_a:
+                        acc_choice = st.selectbox("खाते का प्रकार (Account Mode) *", ["Bank Account", "Cash"], key="new_acc_type")
+                        
+                        if acc_choice == "Bank Account":
+                            txn_choice = st.selectbox("लेनदेन का प्रकार (Transaction Category) *", [
+                                "Customer AEPS Withdrawal (बैंक बढ़ा / नकद घटा)",
+                                "Customer Deposit / Money Transfer (नकद बढ़ा / बैंक घटा)",
+                                "Self Bank Cash Withdrawal (बैंक घटा / नकद बढ़ा)",
+                                "Self Bank Cash Deposit (बैंक बढ़ा / नकद घटा)"
+                            ], key="new_bank_type")
+                        else:
+                            txn_choice = st.selectbox("लेनदेन का प्रकार (Transaction Category) *", [
+                                "Deposit (जमा)", 
+                                "Withdrawal (निकासी)", 
+                                "Customer Due Payment Received (उधार रिकवरी - Cash +)",
+                                "Personal Use / Gullak (निजी खर्च/गुल्लक)"
+                            ], key="new_cash_type")
+                        
+                        entry_amount = st.number_input("लेनदेन राशि (Amount ₹) *", min_value=0.0, step=50.0, key="new_amt")
+                        entry_tx_id = st.text_input("Txn ID / UTR / Ref Number", key="new_txid")
+
+                    with col_b:
+                        entry_cname = st.text_input("ग्राहक का नाम (Customer Name)", key="new_cname")
+                        entry_aadhaar = st.text_input("आधार के अंतिम 4 अंक (Aadhaar Last 4 Digits)", max_chars=4, key="new_adhr")
+                        
+                        if txn_choice == "Customer Due Payment Received (उधार रिकवरी - Cash +)":
+                            entry_due = 0.0
+                            st.caption("ℹ️ इस एंट्री से कस्टमर की पुरानी बाकी राशि (Due) कम हो जाएगी।")
+                        else:
+                            entry_due = st.number_input("नई उधार राशि (अगर बाकी हो) ₹", min_value=0.0, value=0.0, step=50.0, key="new_due")
+                            
+                        entry_desc = st.text_input("अतिरिक्त नोट / विवरण (Description)", key="new_desc")
+                        entry_date = st.date_input("तारीख (Transaction Date)", datetime.now(), key="new_dt")
+
+                    submit_new_txn = st.form_submit_button("🚀 नई एंट्री सेव करें (Save New Transaction)")
+                    
+                    if submit_new_txn:
+                        if entry_amount > 0:
+                            d_fmt = f"{entry_date.strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M')}"
+                            execute_db("""INSERT INTO accounts 
+                                          (username, date, type, amount, account_type, tx_id, cust_name, cust_aadhaar_last4, cust_due_amount, description) 
+                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
+                                       (user_id, d_fmt, txn_choice, entry_amount, acc_choice, entry_tx_id, entry_cname, entry_aadhaar, entry_due, entry_desc))
+                            st.success("🎉 नई एंट्री सफलतापूर्वक सेव हो गई!")
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ कृपया 0 से अधिक राशि दर्ज करें!")
+
+        # TAB 1: STANDARD ENTRY FORM
         with ut1:
             st.subheader("➕ AEPS / Cash / Deposit Transaction Entry")
             
@@ -300,11 +349,9 @@ else:
                     tot_len_den = cust_data['amount'].sum()
                     tot_due_added = cust_data['cust_due_amount'].sum()
                     
-                    # Due Payment Paid By Customer
                     paid_due_df = cust_data[cust_data['type'] == 'Customer Due Payment Received (उधार रिकवरी - Cash +)']
                     tot_due_paid = paid_due_df['amount'].sum() if not paid_due_df.empty else 0.0
                     
-                    # Current Outstanding = Total Due Added - Total Paid Back
                     current_net_due = tot_due_added - tot_due_paid
 
                     lc1, lc2, lc3 = st.columns(3)
@@ -394,11 +441,9 @@ else:
 
             st.write("---")
             
-            # Clean Expanded Window View Container
             with st.container():
                 st.markdown(f"### 🪟 Dedicated Report View Window: **{sel_user}**")
                 
-                # Excel Download
                 if not rep_data.empty:
                     st.download_button(
                         label="📥 Clean Report Export To Excel",
