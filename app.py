@@ -49,7 +49,7 @@ def init_db():
                     description TEXT
                 )''')
 
-    # AUTO-MIGRATION: पुराने टेबल में नए कॉलम ऑटोमैटिक जोड़ने के लिए
+    # AUTO-MIGRATION
     existing_cols = [col[1] for col in c.execute("PRAGMA table_info(accounts)").fetchall()]
     
     if "cust_name" not in existing_cols:
@@ -88,7 +88,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 2. HELPER FUNCTIONS & FIXED BALANCING LOGIC
+# 2. HELPER FUNCTIONS & BALANCING LOGIC
 # =========================================================
 def run_query(query, params=()):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -110,12 +110,12 @@ def convert_df_to_excel(df):
     return output.getvalue()
 
 def calculate_exact_balances(username):
-    # 1. Fetch Opening Balances
+    # Fetch Opening Balances
     op = run_query("SELECT * FROM opening_balances WHERE username=?", (username,))
     cash_op = float(op.iloc[0]['cash_op']) if not op.empty else 0.0
     bank_op = float(op.iloc[0]['bank_op']) if not op.empty else 0.0
     
-    # 2. Fetch Account & Service Data
+    # Fetch Account & Service Data
     acc_df = run_query("SELECT * FROM accounts WHERE username=?", (username,))
     serv_df = run_query("SELECT * FROM daily_services WHERE username=?", (username,))
     
@@ -126,28 +126,22 @@ def calculate_exact_balances(username):
     cash_df = acc_df[acc_df['account_type'] == 'Cash'] if not acc_df.empty else pd.DataFrame()
     bank_df = acc_df[acc_df['account_type'] == 'Bank Account'] if not acc_df.empty else pd.DataFrame()
 
-    # --- Pure Cash Transactions ---
+    # Cash Entries
     cash_dep = float(cash_df[cash_df['type'] == 'Deposit (जमा)']['amount'].sum()) if not cash_df.empty else 0.0
     cash_wth = float(cash_df[cash_df['type'] == 'Withdrawal (निकासी)']['amount'].sum()) if not cash_df.empty else 0.0
     personal_gullak = float(cash_df[cash_df['type'] == 'Personal Use / Gullak (निजी खर्च/गुल्लक)']['amount'].sum()) if not cash_df.empty else 0.0
     
-    # --- Bank & AEPS & DMT Transactions ---
-    # 1. Customer AEPS Withdrawal -> Bank IN (+), Cash OUT (-)
+    # Due Recovery Received in Cash (कस्टमर से मिली बाकी राशि - Cash +)
+    due_recovered_cash = float(cash_df[cash_df['type'] == 'Customer Due Payment Received (उधार रिकवरी - Cash +)']['amount'].sum()) if not cash_df.empty else 0.0
+    
+    # Bank & AEPS & DMT Transactions
     cust_aeps = float(bank_df[bank_df['type'].str.contains('Customer AEPS Withdrawal', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
-    
-    # 2. Customer Deposit / Money Transfer -> Cash IN (+), Bank OUT (-)
     cust_dep_dmt = float(bank_df[bank_df['type'].str.contains('Customer Deposit / Money Transfer', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
-    
-    # 3. Self Bank Cash Withdrawal (बैंक से कैश निकाला) -> Cash IN (+), Bank OUT (-)
     self_bank_wth = float(bank_df[bank_df['type'].str.contains('Self Bank Cash Withdrawal', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
-    
-    # 4. Self Bank Cash Deposit (बैंक में कैश जमा किया) -> Bank IN (+), Cash OUT (-)
     self_bank_dep = float(bank_df[bank_df['type'].str.contains('Self Bank Cash Deposit', na=False)]['amount'].sum()) if not bank_df.empty else 0.0
 
-    # =========================================================
-    # EXACT MATHEMATICAL FORMULA
-    # =========================================================
-    final_cash_closing = cash_op + cash_dep + services_cash_income + self_bank_wth + cust_dep_dmt - cash_wth - personal_gullak - self_bank_dep - cust_aeps
+    # BALANCING MATHEMATICS
+    final_cash_closing = cash_op + cash_dep + services_cash_income + self_bank_wth + cust_dep_dmt + due_recovered_cash - cash_wth - personal_gullak - self_bank_dep - cust_aeps
     final_bank_closing = bank_op + self_bank_dep + cust_aeps - self_bank_wth - cust_dep_dmt
 
     return {
@@ -251,6 +245,7 @@ else:
                         t_type = st.selectbox("लेनदेन का प्रकार *", [
                             "Deposit (जमा)", 
                             "Withdrawal (निकासी)", 
+                            "Customer Due Payment Received (उधार रिकवरी - Cash +)",
                             "Personal Use / Gullak (निजी खर्च/गुल्लक)"
                         ])
                     
@@ -260,7 +255,13 @@ else:
                 with fc2:
                     t_cname = st.text_input("ग्राहक का नाम (Customer Name)")
                     t_aadhaar = st.text_input("आधार के अंतिम 4 अंक (Aadhaar Last 4 Digits)", max_chars=4)
-                    t_due = st.number_input("बाकी/उधार राशि (अगर कोई हो) ₹", min_value=0.0, value=0.0)
+                    
+                    if t_type == "Customer Due Payment Received (उधार रिकवरी - Cash +)":
+                        t_due = 0.0
+                        st.info("💡 यह एंट्री कस्टमर के उधार को कम करेगी और कैश बैलेंस बढ़ाएगी।")
+                    else:
+                        t_due = st.number_input("नई बाकी/उधार राशि (अगर कोई हो) ₹", min_value=0.0, value=0.0)
+                        
                     t_desc = st.text_input("अतिरिक्त नोट / विवरण")
                     t_date = st.date_input("तारीख", datetime.now())
 
@@ -294,14 +295,22 @@ else:
                 cust_data = run_query(query, tuple(params))
                 
                 if not cust_data.empty:
-                    st.write(f"### 📋 {cust_data.iloc[0]['cust_name']} (Aadhaar: ****{cust_data.iloc[0]['cust_aadhaar_last4']}) का स्टेटमेंट")
+                    st.write(f"### 📋 {cust_data.iloc[0]['cust_name']} (Aadhaar: ****{cust_data.iloc[0]['cust_aadhaar_last4']}) का लेजर खाते का विवरण")
                     
                     tot_len_den = cust_data['amount'].sum()
-                    tot_due = cust_data['cust_due_amount'].sum()
+                    tot_due_added = cust_data['cust_due_amount'].sum()
                     
-                    lc1, lc2 = st.columns(2)
+                    # Due Payment Paid By Customer
+                    paid_due_df = cust_data[cust_data['type'] == 'Customer Due Payment Received (उधार रिकवरी - Cash +)']
+                    tot_due_paid = paid_due_df['amount'].sum() if not paid_due_df.empty else 0.0
+                    
+                    # Current Outstanding = Total Due Added - Total Paid Back
+                    current_net_due = tot_due_added - tot_due_paid
+
+                    lc1, lc2, lc3 = st.columns(3)
                     lc1.metric("कुल लेन-देन (Total Volume)", f"₹{tot_len_den:,.2f}")
-                    lc2.metric("कुल बाकी/उधार (Current Outstanding Balance)", f"₹{tot_due:,.2f}")
+                    lc2.metric("कुल चुकाया गया उधार (Total Recovered)", f"₹{tot_due_paid:,.2f}")
+                    lc3.metric("वर्तमान शेष बाकी/उधार (Net Outstanding Due)", f"₹{current_net_due:,.2f}", delta_color="inverse")
                     
                     st.dataframe(cust_data, use_container_width=True)
                     
