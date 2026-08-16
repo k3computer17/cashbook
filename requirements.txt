@@ -3,5 +3,3 @@ pandas
 openpyxl
 pdfplumber
 reportlab
-gspread
-st-gsheets-connection
