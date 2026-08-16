@@ -15,7 +15,6 @@ from reportlab.pdfgen import canvas
 DB_NAME = "local_cashbook.db"
 
 def init_db():
-    """अपने PC पर SQLite डेटाबेस और टेबल ऑटोमैटिक बनाएगा"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
@@ -39,24 +38,33 @@ def init_db():
                     created_date TEXT
                 )''')
     
-    # Accounts/Ledger Table (Updated with Account Type & Tx ID)
+    # Accounts / Cashbook Table
     c.execute('''CREATE TABLE IF NOT EXISTS accounts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT,
                     date TEXT,
-                    type TEXT,
+                    type TEXT,            -- 'Deposit', 'Withdrawal', 'Personal / Gullak'
                     amount REAL,
-                    account_type TEXT,
+                    account_type TEXT,    -- 'Cash', 'Bank OD'
                     tx_id TEXT,
                     description TEXT
+                )''')
+    
+    # Daily Services Log Table
+    c.execute('''CREATE TABLE IF NOT EXISTS daily_services (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT,
+                    date TEXT,
+                    service_name TEXT,
+                    ref_no TEXT,
+                    income_amount REAL,
+                    notes TEXT
                 )''')
     
     # Opening Balance Table
     c.execute('''CREATE TABLE IF NOT EXISTS opening_balances (
                     username TEXT PRIMARY KEY,
                     cash_op REAL DEFAULT 0.0,
-                    savings_op REAL DEFAULT 0.0,
-                    current_op REAL DEFAULT 0.0,
                     od_op REAL DEFAULT 0.0
                 )''')
     
@@ -71,7 +79,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 2. HELPER FUNCTIONS FOR LOCAL DB & BALANCES
+# 2. HELPER FUNCTIONS & ADVANCED BALANCING LOGIC
 # =========================================================
 def run_query(query, params=()):
     conn = sqlite3.connect(DB_NAME)
@@ -111,7 +119,6 @@ def convert_df_to_excel(df):
     return output.getvalue()
 
 def parse_text_or_pdf(text):
-    """पेस्ट टेक्स्ट या PDF से Amount और Transaction ID एक्सट्रैक्ट करता है"""
     amount_match = re.search(r'(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{2})?)', text, re.IGNORECASE)
     tx_match = re.search(r'(?:Txn|Ref|UPI|IMPS|UTR)\s*(?:No|ID)?[:\s]*([A-Za-z0-9]+)', text, re.IGNORECASE)
     
@@ -119,45 +126,60 @@ def parse_text_or_pdf(text):
     tx_id = tx_match.group(1) if tx_match else ""
     return amount, tx_id
 
-def get_user_balances(username):
-    """Opening Balance और Transcations के आधार पर Closing Balances की गणना करता है"""
+def calculate_exact_balances(username):
+    """
+    कैलकुलेशन नियम:
+    - Cash Closing = Cash OP + (Cash Deposits) + (Services Income) + (Bank Withdrawal -> Cash In) - (Cash Withdrawals) - (Personal/Gullak)
+    - Bank OD Closing = Bank OD OP + (Bank OD Withdrawals) - (Bank OD Deposits)
+    """
     op = run_query("SELECT * FROM opening_balances WHERE username=?", (username,))
-    
     cash_op = op.iloc[0]['cash_op'] if not op.empty else 0.0
-    savings_op = op.iloc[0]['savings_op'] if not op.empty else 0.0
-    current_op = op.iloc[0]['current_op'] if not op.empty else 0.0
     od_op = op.iloc[0]['od_op'] if not op.empty else 0.0
     
-    df = run_query("SELECT * FROM accounts WHERE username=?", (username,))
+    acc_df = run_query("SELECT * FROM accounts WHERE username=?", (username,))
+    serv_df = run_query("SELECT * FROM daily_services WHERE username=?", (username,))
     
-    def calc_balance(acc_name, base_val):
-        sub_df = df[df['account_type'] == acc_name]
-        dep = sub_df[sub_df['type'] == 'Deposit (जमा)']['amount'].sum()
-        wth = sub_df[sub_df['type'] == 'Withdrawal (निकासी)']['amount'].sum()
-        return base_val + dep - wth
-
+    # Services Incomes (Adds directly to Cash)
+    services_cash_income = serv_df['income_amount'].sum() if not serv_df.empty else 0.0
+    
+    # Cash Calculations
+    cash_df = acc_df[acc_df['account_type'] == 'Cash'] if not acc_df.empty else pd.DataFrame()
+    cash_dep = cash_df[cash_df['type'] == 'Deposit (जमा)']['amount'].sum() if not cash_df.empty else 0.0
+    cash_wth = cash_df[cash_df['type'] == 'Withdrawal (निकासी)']['amount'].sum() if not cash_df.empty else 0.0
+    personal_gullak = cash_df[cash_df['type'] == 'Personal Use / Gullak (निजी खर्च/गुल्लक)']['amount'].sum() if not cash_df.empty else 0.0
+    
+    # Bank OD Calculations (Reverse OD System)
+    od_df = acc_df[acc_df['account_type'] == 'Bank OD'] if not acc_df.empty else pd.DataFrame()
+    od_wth = od_df[od_df['type'] == 'Withdrawal (निकासी / Cash Laye)']['amount'].sum() if not od_df.empty else 0.0
+    od_dep = od_df[od_df['type'] == 'Deposit (जमा / OD Bhara)']['amount'].sum() if not od_df.empty else 0.0
+    
+    # Transfer Bank Withdrawal into Cash
+    cash_from_bank_od = od_wth
+    
+    final_cash_closing = cash_op + cash_dep + services_cash_income + cash_from_bank_od - cash_wth - personal_gullak
+    final_od_closing = od_op + od_wth - od_dep
+    
     return {
-        "Cash": {"opening": cash_op, "closing": calc_balance("Cash", cash_op)},
-        "Bank Savings": {"opening": savings_op, "closing": calc_balance("Bank Savings", savings_op)},
-        "Bank Current": {"opening": current_op, "closing": calc_balance("Bank Current", current_op)},
-        "Bank OD": {"opening": od_op, "closing": calc_balance("Bank OD", od_op)}
+        "cash_op": cash_op,
+        "cash_closing": final_cash_closing,
+        "od_op": od_op,
+        "od_closing": final_od_closing,
+        "services_income": services_cash_income,
+        "personal_gullak": personal_gullak
     }
 
 # =========================================================
-# 3. PAGE CONFIG & SESSION
+# 3. PAGE CONFIG & LOGIN
 # =========================================================
-st.set_page_config(page_title="Local Cashbook & Admin Panel", page_icon="💻", layout="wide")
+st.set_page_config(page_title="Cashbook & Services Manager", page_icon="💻", layout="wide")
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'user_info' not in st.session_state:
     st.session_state['user_info'] = None
 
-st.title("💻 PC Local Accounting System")
+st.title("💻 PC Accounting & Daily Services System")
 
-# =========================================================
-# 4. LOGIN (User & Admin Only - No Public Registration)
-# =========================================================
 if not st.session_state['logged_in']:
     tab_user_login, tab_admin_login = st.tabs(["👤 User Login", "🔐 Admin Login"])
 
@@ -167,13 +189,9 @@ if not st.session_state['logged_in']:
         if st.button("User Login"):
             users_df = run_query("SELECT * FROM users WHERE username=? AND password=? AND role='Customer'", (c_username, c_password))
             if not users_df.empty:
-                if users_df.iloc[0]['is_approved'] == 1:
-                    st.session_state['logged_in'] = True
-                    st.session_state['user_info'] = users_df.iloc[0].to_dict()
-                    st.success("✅ लॉगिन सफल!")
-                    st.rerun()
-                else:
-                    st.warning("⚠️ आपका अकाउंट अभी निष्क्रिय है।")
+                st.session_state['logged_in'] = True
+                st.session_state['user_info'] = users_df.iloc[0].to_dict()
+                st.rerun()
             else:
                 st.error("❌ गलत विवरण!")
 
@@ -185,13 +203,12 @@ if not st.session_state['logged_in']:
             if not users_df.empty:
                 st.session_state['logged_in'] = True
                 st.session_state['user_info'] = users_df.iloc[0].to_dict()
-                st.success("✅ एडमिन लॉगिन सफल!")
                 st.rerun()
             else:
                 st.error("❌ गलत Admin विवरण!")
 
 # =========================================================
-# 5. DASHBOARD (USER & ADMIN)
+# 4. DASHBOARD
 # =========================================================
 else:
     st.sidebar.write(f"Logged in: **{st.session_state['user_info']['username']}**")
@@ -203,73 +220,106 @@ else:
     user_role = st.session_state['user_info']['role']
     user_id = st.session_state['user_info']['username']
 
-    # ------------------ CUSTOMER PANEL ------------------
+    # ------------------ CUSTOMER DASHBOARD ------------------
     if user_role == "Customer":
-        # BALANCES SUMMARY CARDS
-        st.subheader("📊 आपके खातों का Opening एवं Closing बैलेंस")
-        balances = get_user_balances(user_id)
+        b_data = calculate_exact_balances(user_id)
         
+        st.subheader("📊 आपके Cash और Bank OD का रियल-टाइम बैलेंस")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.metric("💵 Cash Balance", f"₹{balances['Cash']['closing']:,}", f"Opening: ₹{balances['Cash']['opening']:,}")
+            st.metric("💵 Cash Balance", f"₹{b_data['cash_closing']:,}", f"Opening: ₹{b_data['cash_op']:,}")
         with c2:
-            st.metric("🏦 Bank Savings", f"₹{balances['Bank Savings']['closing']:,}", f"Opening: ₹{balances['Bank Savings']['opening']:,}")
+            st.metric("💳 Bank OD Balance", f"₹{b_data['od_closing']:,}", f"Opening: ₹{b_data['od_op']:,}")
         with c3:
-            st.metric("🏦 Bank Current", f"₹{balances['Bank Current']['closing']:,}", f"Opening: ₹{balances['Bank Current']['opening']:,}")
+            st.metric("💼 Total Service Income", f"₹{b_data['services_income']:,}")
         with c4:
-            st.metric("💳 Bank OD", f"₹{balances['Bank OD']['closing']:,}", f"Opening: ₹{balances['Bank OD']['opening']:,}")
+            st.metric("🏺 Gullak / Personal Exp", f"₹{b_data['personal_gullak']:,}")
 
         st.write("---")
         
-        u_tab1, u_tab2, u_tab3, u_tab4 = st.tabs(["✍️ डेली एंट्री (Manual/Text/PDF)", "📋 कैशबुक (Edit/Delete)", "⚙️ Opening Balance सेट करें", "🪪 ID Card & Excel"])
+        u_tab1, u_tab2, u_tab3, u_tab4, u_tab5 = st.tabs([
+            "✍️ Cash & Bank Entry", 
+            "🛠️ Daily Services Work Window", 
+            "📋 Ledger & Edit/Delete", 
+            "⚙️ Opening Balance सेट करें", 
+            "🪪 ID Card & Excel"
+        ])
 
-        # TAB 1: DAILY ENTRY
+        # TAB 1: CASH & BANK ENTRY
         with u_tab1:
-            st.subheader("➕ नई एंट्री दर्ज करें")
-            entry_mode = st.radio("एंट्री मोड चुनें:", ["Manual Form", "Copy-Paste Text", "PDF Upload"], horizontal=True)
+            st.subheader("➕ Cash & Bank Transactions")
+            entry_mode = st.radio("इनपुट टाइप:", ["Manual Form", "Copy-Paste Text", "PDF Upload"], horizontal=True)
 
-            auto_amount = 0.0
-            auto_tx_id = ""
-
+            auto_amount, auto_tx_id = 0.0, ""
             if entry_mode == "Copy-Paste Text":
-                pasted_text = st.text_area("यहाँ बैंक का SMS या रसीद का टेक्स्ट पेस्ट करें:")
+                pasted_text = st.text_area("बैंक मैसेज या रसीद पेस्ट करें:")
                 if pasted_text:
                     auto_amount, auto_tx_id = parse_text_or_pdf(pasted_text)
-                    st.info(f"एक्सट्रैक्ट हुआ -> Amount: ₹{auto_amount} | Txn ID: {auto_tx_id}")
-
             elif entry_mode == "PDF Upload":
-                uploaded_pdf = st.file_uploader("बैंक स्टेटमेंट/रसीद की PDF अपलोड करें:", type=["pdf"])
+                uploaded_pdf = st.file_uploader("PDF अपलोड करें:", type=["pdf"])
                 if uploaded_pdf:
                     with pdfplumber.open(uploaded_pdf) as pdf:
                         extracted_text = "".join([page.extract_text() or "" for page in pdf.pages])
                     auto_amount, auto_tx_id = parse_text_or_pdf(extracted_text)
-                    st.info(f"PDF से एक्सट्रैक्ट हुआ -> Amount: ₹{auto_amount} | Txn ID: {auto_tx_id}")
 
-            with st.form("new_tx_form"):
+            with st.form("cash_bank_form"):
                 fc1, fc2 = st.columns(2)
                 with fc1:
-                    t_account = st.selectbox("खाता चुनें (Account Type)", ["Cash", "Bank Savings", "Bank Current", "Bank OD"])
-                    t_type = st.selectbox("लेनदेन का प्रकार", ["Deposit (जमा)", "Withdrawal (निकासी)"])
+                    t_account = st.selectbox("Account Type", ["Cash", "Bank OD"])
+                    if t_account == "Bank OD":
+                        t_type = st.selectbox("प्रकार", ["Withdrawal (निकासी / Cash Laye)", "Deposit (जमा / OD Bhara)"])
+                    else:
+                        t_type = st.selectbox("प्रकार", ["Deposit (जमा)", "Withdrawal (निकासी)", "Personal Use / Gullak (निजी खर्च/गुल्लक)"])
+                    
                     t_amount = st.number_input("राशि (₹)", min_value=0.0, value=float(auto_amount))
                 
                 with fc2:
-                    t_tx_id = st.text_input("Transaction / UPI / Ref No", value=str(auto_tx_id))
-                    t_desc = st.text_input("विवरण / ग्राहक का नाम / नोट")
+                    t_tx_id = st.text_input("Txn / Ref / UPI No", value=str(auto_tx_id))
+                    t_desc = st.text_input("विवरण / कस्टमर का नाम / नोट")
                     t_date = st.date_input("तारीख", datetime.now())
 
-                if st.form_submit_button("✅ एंट्री सेव करें"):
+                if st.form_submit_button("✅ ट्रांजैक्शन सेव करें"):
                     if t_amount > 0:
                         date_str = f"{t_date.strftime('%Y-%m-%d')} {datetime.now().strftime('%H:%M')}"
                         execute_db("""INSERT INTO accounts (username, date, type, amount, account_type, tx_id, description) 
                                       VALUES (?, ?, ?, ?, ?, ?, ?)""", 
                                    (user_id, date_str, t_type, t_amount, t_account, t_tx_id, t_desc))
-                        st.success("✅ एंट्री सफलतापूर्वक दर्ज हो गई!")
+                        st.success("✅ एंट्री सेव हो गई!")
                         st.rerun()
-                    else:
-                        st.error("⚠️ कृपया सही राशि दर्ज करें!")
 
-        # TAB 2: EDIT / DELETE LEDGER ENTRIES
+        # TAB 2: DAILY SERVICES WORK WINDOW
         with u_tab2:
+            st.subheader("🛠️ आज के कार्य की एंट्री (Daily Services Work Log)")
+            
+            with st.form("services_log_form"):
+                sc1, sc2 = st.columns(2)
+                with sc1:
+                    service_cat = st.selectbox("सर्विस का प्रकार चुनें *", [
+                        "PMJJBY", "PMSBY", "APY", "KYC", "CKYC", "Loan Lead",
+                        "PAN Card (Other Service)", "Aadhaar Card (Other Service)", 
+                        "Online Service (Other)", "Other Services"
+                    ])
+                    s_ref = st.text_input("कस्टमर नाम / रेफरेंस / सर्वर No *")
+                with sc2:
+                    s_income = st.number_input("प्राप्त शुल्क/आय (₹ - Cash में जुड़ेगा) *", min_value=0.0)
+                    s_notes = st.text_input("अतिरिक्त नोट")
+
+                if st.form_submit_button("💼 सर्विस कार्य दर्ज करें"):
+                    if s_income >= 0 and s_ref:
+                        today_time = datetime.now().strftime('%Y-%m-%d %H:%M')
+                        execute_db("""INSERT INTO daily_services (username, date, service_name, ref_no, income_amount, notes) 
+                                      VALUES (?, ?, ?, ?, ?, ?)""",
+                                   (user_id, today_time, service_cat, s_ref, s_income, s_notes))
+                        st.success("✅ कार्य दर्ज किया गया और शुल्क Cash में जुड़ गया!")
+                        st.rerun()
+
+            st.write("---")
+            st.subheader("📊 आज का सर्विसेस लॉग")
+            serv_data = run_query("SELECT date, service_name, ref_no, income_amount, notes FROM daily_services WHERE username=? ORDER BY id DESC", (user_id,))
+            st.dataframe(serv_data, use_container_width=True)
+
+        # TAB 3: LEDGER & EDIT/DELETE
+        with u_tab3:
             st.subheader("📋 आपकी कैशबुक एंट्रीज़")
             my_entries = run_query("SELECT id, date, account_type, type, amount, tx_id, description FROM accounts WHERE username=? ORDER BY id DESC", (user_id,))
             
@@ -277,16 +327,14 @@ else:
                 st.dataframe(my_entries, use_container_width=True)
                 st.write("---")
                 
-                selected_id = st.selectbox("बदलने या मिटाने के लिए एंट्री ID चुनें:", my_entries['id'].tolist())
+                selected_id = st.selectbox("बदलने/मिटाने के लिए ID चुनें:", my_entries['id'].tolist())
                 row_to_edit = my_entries[my_entries['id'] == selected_id].iloc[0]
 
-                with st.expander(f"⚙️ Selected Entry ID #{selected_id} का विवरण बदलें"):
+                with st.expander(f"⚙️ Entry ID #{selected_id} संपादित करें"):
                     e_col1, e_col2 = st.columns(2)
                     with e_col1:
-                        acc_opts = ["Cash", "Bank Savings", "Bank Current", "Bank OD"]
-                        acc_idx = acc_opts.index(row_to_edit['account_type']) if row_to_edit['account_type'] in acc_opts else 0
-                        e_acc = st.selectbox("Account Type", acc_opts, index=acc_idx)
-                        e_type = st.selectbox("Type", ["Deposit (जमा)", "Withdrawal (निकासी)"], index=0 if "Deposit" in row_to_edit['type'] else 1)
+                        e_acc = st.selectbox("Account Type", ["Cash", "Bank OD"], index=0 if row_to_edit['account_type']=="Cash" else 1)
+                        e_type = st.selectbox("Type", ["Deposit (जमा)", "Withdrawal (निकासी)", "Personal Use / Gullak (निजी खर्च/गुल्लक)"])
                         e_amount = st.number_input("Amount", value=float(row_to_edit['amount']), key="edit_amt")
                     with e_col2:
                         e_tx = st.text_input("Txn ID", value=str(row_to_edit['tx_id']), key="edit_tx")
@@ -294,53 +342,41 @@ else:
 
                     btn_c1, btn_c2 = st.columns(2)
                     with btn_c1:
-                        if st.button("💾 अपडेट (Update) करें"):
-                            execute_db("""UPDATE accounts SET account_type=?, type=?, amount=?, tx_id=?, description=? WHERE id=?""", 
+                        if st.button("💾 अपडेट करें"):
+                            execute_db("UPDATE accounts SET account_type=?, type=?, amount=?, tx_id=?, description=? WHERE id=?", 
                                        (e_acc, e_type, e_amount, e_tx, e_desc, selected_id))
-                            st.success("✅ एंट्री अपडेट हो गई!")
+                            st.success("✅ अपडेट हो गया!")
                             st.rerun()
-                    
                     with btn_c2:
-                        if st.button("🗑️ डिलीट (Delete) करें"):
+                        if st.button("🗑️ डिलीट करें"):
                             execute_db("DELETE FROM accounts WHERE id=?", (selected_id,))
-                            st.warning("⚠️ एंट्री डिलीट कर दी गई!")
+                            st.warning("⚠️ डिलीट कर दिया गया!")
                             st.rerun()
-            else:
-                st.info("अभी कोई एंट्री दर्ज नहीं की गई है।")
 
-        # TAB 3: OPENING BALANCE
-        with u_tab3:
+        # TAB 4: OPENING BALANCES SETTINGS
+        with u_tab4:
             st.subheader("⚙️ Opening Balances सेट करें")
             curr_op = run_query("SELECT * FROM opening_balances WHERE username=?", (user_id,))
             
             op_c = curr_op.iloc[0]['cash_op'] if not curr_op.empty else 0.0
-            op_s = curr_op.iloc[0]['savings_op'] if not curr_op.empty else 0.0
-            op_cur = curr_op.iloc[0]['current_op'] if not curr_op.empty else 0.0
             op_od = curr_op.iloc[0]['od_op'] if not curr_op.empty else 0.0
 
             with st.form("op_form"):
                 o1, o2 = st.columns(2)
                 with o1:
                     new_op_c = st.number_input("Cash Opening Balance (₹)", value=float(op_c))
-                    new_op_s = st.number_input("Bank Savings Opening Balance (₹)", value=float(op_s))
                 with o2:
-                    new_op_cur = st.number_input("Bank Current Opening Balance (₹)", value=float(op_cur))
                     new_op_od = st.number_input("Bank OD Opening Balance (₹)", value=float(op_od))
 
                 if st.form_submit_button("💾 Opening Balances सेव करें"):
-                    execute_db("""INSERT INTO opening_balances (username, cash_op, savings_op, current_op, od_op)
-                                  VALUES (?, ?, ?, ?, ?)
-                                  ON CONFLICT(username) DO UPDATE SET
-                                  cash_op=excluded.cash_op,
-                                  savings_op=excluded.savings_op,
-                                  current_op=excluded.current_op,
-                                  od_op=excluded.od_op""",
-                               (user_id, new_op_c, new_op_s, new_op_cur, new_op_od))
+                    execute_db("""INSERT INTO opening_balances (username, cash_op, od_op) VALUES (?, ?, ?)
+                                  ON CONFLICT(username) DO UPDATE SET cash_op=excluded.cash_op, od_op=excluded.od_op""",
+                               (user_id, new_op_c, new_op_od))
                     st.success("✅ Opening Balances अपडेट हो गए हैं!")
                     st.rerun()
 
-        # TAB 4: ID CARD & EXCEL DOWNLOAD
-        with u_tab4:
+        # TAB 5: ID CARD & EXCEL DOWNLOAD
+        with u_tab5:
             st.subheader("🪪 ID Card Download")
             client_df = run_query("SELECT * FROM clients WHERE unique_client_id=?", (st.session_state['user_info'].get('client_id'),))
             if not client_df.empty:
@@ -352,86 +388,68 @@ else:
             st.subheader("📊 Excel Data Download")
             my_acc = run_query("SELECT * FROM accounts WHERE username=?", (user_id,))
             if not my_acc.empty:
-                st.download_button("📊 Excel डेटा डाउनलोड करें", data=convert_df_to_excel(my_acc), file_name="My_Accounts.xlsx")
+                st.download_button("📊 Cashbook Excel डाउनलोड करें", data=convert_df_to_excel(my_acc), file_name="My_Accounts.xlsx")
 
     # ------------------ MASTER ADMIN PANEL ------------------
     elif user_role == "Admin":
-        st.title("👑 Admin Control Panel")
-        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["👥 यूजर्स डेटा & ID लिस्ट", "➕ नया यूजर जोड़ें", "📊 खातों का डेटा & Excel"])
+        st.title("👑 Master Admin Control Panel")
+        admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs([
+            "👥 यूजर्स ID लिस्ट", 
+            "➕ नया यूजर जोड़ें", 
+            "📊 मास्टर Cashbook Ledger", 
+            "🛠️ यूजर Services वर्क रिपोर्ट"
+        ])
 
-        # TAB 1: User IDs & Details List
+        # ADMIN TAB 1: USERS LIST
         with admin_tab1:
-            st.subheader("👥 सभी Registered Users की सूची")
-            user_list_query = """
-                SELECT u.id, u.username, u.password, u.client_id, 
-                       c.name, c.mobile, c.address, c.created_date
-                FROM users u
-                LEFT JOIN clients c ON u.client_id = c.unique_client_id
-                WHERE u.role = 'Customer'
-                ORDER BY u.id DESC
-            """
-            users_data = run_query(user_list_query)
-
+            st.subheader("👥 सभी Registered Users")
+            users_data = run_query("""SELECT u.id, u.username, u.password, u.client_id, c.name, c.mobile, c.address, c.created_date 
+                                      FROM users u LEFT JOIN clients c ON u.client_id = c.unique_client_id 
+                                      WHERE u.role = 'Customer' ORDER BY u.id DESC""")
             if not users_data.empty:
-                st.download_button("📥 सभी यूजर्स डेटा Excel Export करें", 
-                                   data=convert_df_to_excel(users_data), 
-                                   file_name="All_Users_Details.xlsx")
-                st.write("---")
-                st.dataframe(users_data[['username', 'password', 'client_id', 'name', 'mobile', 'address', 'created_date']], use_container_width=True)
-            else:
-                st.info("अभी कोई यूजर पंजीकृत नहीं है।")
+                st.download_button("📥 All Users Excel Export", data=convert_df_to_excel(users_data), file_name="All_Users_Details.xlsx")
+                st.dataframe(users_data, use_container_width=True)
 
-        # TAB 2: Add New User & WhatsApp Direct Send
+        # ADMIN TAB 2: ADD USER & WHATSAPP
         with admin_tab2:
-            st.subheader("➕ नया यूजर रजिस्टर करें (Admin Only)")
-            
-            with st.form("add_user_form", clear_on_submit=False):
-                col1, col2 = st.columns(2)
-                with col1:
-                    c_name = st.text_input("ग्राहक का नाम *")
+            st.subheader("➕ नया यूजर जोड़ें")
+            with st.form("add_user_form"):
+                ac1, ac2 = st.columns(2)
+                with ac1:
+                    c_name = st.text_input("ग्राहक नाम *")
                     c_mobile = st.text_input("मोबाइल नंबर (WhatsApp) *")
                     c_address = st.text_area("पता *")
-                with col2:
-                    c_userid = st.text_input("User ID बनाएं *")
-                    c_pass = st.text_input("Password बनाएं *")
+                with ac2:
+                    c_userid = st.text_input("User ID *")
+                    c_pass = st.text_input("Password *")
 
-                submit_reg = st.form_submit_button("पंजीकृत करें")
-
-            if submit_reg:
-                if all([c_name, c_mobile, c_userid, c_pass, c_address]):
-                    existing = run_query("SELECT * FROM users WHERE username=?", (c_userid,))
-                    if not existing.empty:
-                        st.error("❌ यह User ID पहले से मौजूद है! कृपया दूसरी ID चुनें।")
-                    else:
+                if st.form_submit_button("पंजीकृत करें"):
+                    if all([c_name, c_mobile, c_userid, c_pass, c_address]):
                         auto_id = f"NK-CUST-{1001 + len(run_query('SELECT * FROM clients'))}"
                         today = datetime.now().strftime("%Y-%m-%d")
-                        
-                        execute_db("INSERT INTO clients (unique_client_id, name, mobile, address, created_date) VALUES (?, ?, ?, ?, ?)",
-                                   (auto_id, c_name, c_mobile, c_address, today))
-                        
-                        execute_db("INSERT INTO users (username, password, role, client_id, is_approved) VALUES (?, ?, 'Customer', ?, 1)",
-                                   (c_userid, c_pass, auto_id))
-                        
-                        st.success(f"✅ यूजर सफलतापूर्वक जोड़ा गया! Client ID: {auto_id}")
+                        execute_db("INSERT INTO clients (unique_client_id, name, mobile, address, created_date) VALUES (?, ?, ?, ?, ?)", (auto_id, c_name, c_mobile, c_address, today))
+                        execute_db("INSERT INTO users (username, password, role, client_id, is_approved) VALUES (?, ?, 'Customer', ?, 1)", (c_userid, c_pass, auto_id))
+                        st.success(f"✅ यूजर बन गया! Client ID: {auto_id}")
                         
                         clean_mobile = ''.join(filter(str.isdigit, c_mobile))
                         if len(clean_mobile) == 10:
                             clean_mobile = "91" + clean_mobile
-                        
-                        whatsapp_msg = f"नमस्ते {c_name},\nआपका NIKA Services अकाउंट बन गया है।\n\n🆔 *User ID:* {c_userid}\n🔑 *Password:* {c_pass}\n🪪 *Client ID:* {auto_id}\n\nधन्यवाद!"
-                        encoded_msg = urllib.parse.quote(whatsapp_msg)
-                        wa_url = f"https://wa.me/{clean_mobile}?text={encoded_msg}"
-                        
-                        st.markdown(f'<a href="{wa_url}" target="_blank" style="display: inline-block; padding: 10px 20px; background-color: #25D366; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">📲 WhatsApp पर ID & Password भेजें</a>', unsafe_allow_html=True)
-                else:
-                    st.error("⚠️ सभी फील्ड भरना अनिवार्य है!")
+                        msg = f"नमस्ते {c_name},\nआपका NIKA Services अकाउंट बन गया है।\n\n🆔 *User ID:* {c_userid}\n🔑 *Password:* {c_pass}\n🪪 *Client ID:* {auto_id}"
+                        wa_url = f"https://wa.me/{clean_mobile}?text={urllib.parse.quote(msg)}"
+                        st.markdown(f'<a href="{wa_url}" target="_blank" style="display: inline-block; padding: 10px 20px; background-color: #25D366; color: white; border-radius: 5px; text-decoration: none; font-weight: bold;">📲 WhatsApp पर विवरण भेजें</a>', unsafe_allow_html=True)
 
-        # TAB 3: Master Accounts Data Export
+        # ADMIN TAB 3: MASTER ACCOUNTS LEDGER REPORT
         with admin_tab3:
-            st.subheader("📊 सभी लेनदेन (Master Accounts Data)")
+            st.subheader("📊 यूजर्स का मास्टर Cashbook Ledger")
             all_accounts = run_query("SELECT * FROM accounts ORDER BY id DESC")
             st.dataframe(all_accounts, use_container_width=True)
             if not all_accounts.empty:
-                st.download_button("📥 Master Transactions Excel डाउनलोड", 
-                                   data=convert_df_to_excel(all_accounts), 
-                                   file_name="Master_Transactions_Data.xlsx")
+                st.download_button("📥 Master Cashbook Excel", data=convert_df_to_excel(all_accounts), file_name="Master_Accounts.xlsx")
+
+        # ADMIN TAB 4: SERVICES WORK REPORT
+        with admin_tab4:
+            st.subheader("🛠️ यूजर सर्विसेस वर्क रिपोर्ट (Services Report)")
+            all_services = run_query("SELECT * FROM daily_services ORDER BY id DESC")
+            st.dataframe(all_services, use_container_width=True)
+            if not all_services.empty:
+                st.download_button("📥 Services Work Report Excel", data=convert_df_to_excel(all_services), file_name="Services_Report.xlsx")
