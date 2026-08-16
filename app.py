@@ -10,7 +10,7 @@ import pdfplumber
 from reportlab.pdfgen import canvas
 
 # =========================================================
-# 1. LOCAL DATABASE INITIALIZATION (PC Server Setup)
+# 1. LOCAL DATABASE INITIALIZATION
 # =========================================================
 DB_NAME = "local_cashbook.db"
 
@@ -43,9 +43,9 @@ def init_db():
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT,
                     date TEXT,
-                    type TEXT,            -- 'Deposit', 'Withdrawal', 'Personal / Gullak'
+                    type TEXT,            -- 'Deposit (जमा)', 'Withdrawal (निकासी)', 'Personal Use / Gullak'
                     amount REAL,
-                    account_type TEXT,    -- 'Cash', 'Bank OD'
+                    account_type TEXT,    -- 'Cash', 'Bank'
                     tx_id TEXT,
                     description TEXT
                 )''')
@@ -65,7 +65,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS opening_balances (
                     username TEXT PRIMARY KEY,
                     cash_op REAL DEFAULT 0.0,
-                    od_op REAL DEFAULT 0.0
+                    bank_op REAL DEFAULT 0.0
                 )''')
     
     # Default Admin
@@ -79,7 +79,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 2. HELPER FUNCTIONS & ADVANCED BALANCING LOGIC
+# 2. HELPER FUNCTIONS & BALANCING LOGIC
 # =========================================================
 def run_query(query, params=()):
     conn = sqlite3.connect(DB_NAME)
@@ -129,41 +129,43 @@ def parse_text_or_pdf(text):
 def calculate_exact_balances(username):
     """
     कैलकुलेशन नियम:
-    - Cash Closing = Cash OP + (Cash Deposits) + (Services Income) + (Bank Withdrawal -> Cash In) - (Cash Withdrawals) - (Personal/Gullak)
-    - Bank OD Closing = Bank OD OP + (Bank OD Withdrawals) - (Bank OD Deposits)
+    - Bank से पैसा निकाला (Bank Withdrawal) -> Cash में जुड़ेगा (+), Bank से घटेगा (-)
+    - Bank में Cash जमा किया (Bank Deposit) -> Bank में जुड़ेगा (+), Cash से घटेगा (-)
+    - Services Income -> Cash में जुड़ेगा (+)
+    - Personal Use / Gullak -> Cash से घटेगा (-)
     """
     op = run_query("SELECT * FROM opening_balances WHERE username=?", (username,))
     cash_op = op.iloc[0]['cash_op'] if not op.empty else 0.0
-    od_op = op.iloc[0]['od_op'] if not op.empty else 0.0
+    bank_op = op.iloc[0]['bank_op'] if not op.empty else 0.0
     
     acc_df = run_query("SELECT * FROM accounts WHERE username=?", (username,))
     serv_df = run_query("SELECT * FROM daily_services WHERE username=?", (username,))
     
-    # Services Incomes (Adds directly to Cash)
+    # Services Income
     services_cash_income = serv_df['income_amount'].sum() if not serv_df.empty else 0.0
     
-    # Cash Calculations
+    # Cash Entries
     cash_df = acc_df[acc_df['account_type'] == 'Cash'] if not acc_df.empty else pd.DataFrame()
     cash_dep = cash_df[cash_df['type'] == 'Deposit (जमा)']['amount'].sum() if not cash_df.empty else 0.0
     cash_wth = cash_df[cash_df['type'] == 'Withdrawal (निकासी)']['amount'].sum() if not cash_df.empty else 0.0
     personal_gullak = cash_df[cash_df['type'] == 'Personal Use / Gullak (निजी खर्च/गुल्लक)']['amount'].sum() if not cash_df.empty else 0.0
     
-    # Bank OD Calculations (Reverse OD System)
-    od_df = acc_df[acc_df['account_type'] == 'Bank OD'] if not acc_df.empty else pd.DataFrame()
-    od_wth = od_df[od_df['type'] == 'Withdrawal (निकासी / Cash Laye)']['amount'].sum() if not od_df.empty else 0.0
-    od_dep = od_df[od_df['type'] == 'Deposit (जमा / OD Bhara)']['amount'].sum() if not od_df.empty else 0.0
+    # Bank Entries
+    bank_df = acc_df[acc_df['account_type'] == 'Bank Account'] if not acc_df.empty else pd.DataFrame()
+    bank_wth = bank_df[bank_df['type'] == 'Withdrawal (बैंक से पैसा निकाला / Cash Laye)']['amount'].sum() if not bank_df.empty else 0.0
+    bank_dep = bank_df[bank_df['type'] == 'Deposit (बैंक में जमा किया)']['amount'].sum() if not bank_df.empty else 0.0
     
-    # Transfer Bank Withdrawal into Cash
-    cash_from_bank_od = od_wth
-    
-    final_cash_closing = cash_op + cash_dep + services_cash_income + cash_from_bank_od - cash_wth - personal_gullak
-    final_od_closing = od_op + od_wth - od_dep
+    # Inter-account Transfer Logic
+    # Bank से निकाला पैसा = Cash में जुड़ा (+), Bank से घटा (-)
+    # Bank में जमा पैसा = Bank में जुड़ा (+), Cash से घटा (-)
+    final_cash_closing = cash_op + cash_dep + services_cash_income + bank_wth - cash_wth - personal_gullak - bank_dep
+    final_bank_closing = bank_op + bank_dep - bank_wth
     
     return {
         "cash_op": cash_op,
         "cash_closing": final_cash_closing,
-        "od_op": od_op,
-        "od_closing": final_od_closing,
+        "bank_op": bank_op,
+        "bank_closing": final_bank_closing,
         "services_income": services_cash_income,
         "personal_gullak": personal_gullak
     }
@@ -224,12 +226,12 @@ else:
     if user_role == "Customer":
         b_data = calculate_exact_balances(user_id)
         
-        st.subheader("📊 आपके Cash और Bank OD का रियल-टाइम बैलेंस")
+        st.subheader("📊 आपके Cash और Bank का रियल-टाइम बैलेंस")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.metric("💵 Cash Balance", f"₹{b_data['cash_closing']:,}", f"Opening: ₹{b_data['cash_op']:,}")
         with c2:
-            st.metric("💳 Bank OD Balance", f"₹{b_data['od_closing']:,}", f"Opening: ₹{b_data['od_op']:,}")
+            st.metric("🏦 Bank Balance", f"₹{b_data['bank_closing']:,}", f"Opening: ₹{b_data['bank_op']:,}")
         with c3:
             st.metric("💼 Total Service Income", f"₹{b_data['services_income']:,}")
         with c4:
@@ -265,11 +267,18 @@ else:
             with st.form("cash_bank_form"):
                 fc1, fc2 = st.columns(2)
                 with fc1:
-                    t_account = st.selectbox("Account Type", ["Cash", "Bank OD"])
-                    if t_account == "Bank OD":
-                        t_type = st.selectbox("प्रकार", ["Withdrawal (निकासी / Cash Laye)", "Deposit (जमा / OD Bhara)"])
+                    t_account = st.selectbox("Account Type", ["Cash", "Bank Account"])
+                    if t_account == "Bank Account":
+                        t_type = st.selectbox("लेनदेन का प्रकार", [
+                            "Withdrawal (बैंक से पैसा निकाला / Cash Laye)", 
+                            "Deposit (बैंक में जमा किया)"
+                        ])
                     else:
-                        t_type = st.selectbox("प्रकार", ["Deposit (जमा)", "Withdrawal (निकासी)", "Personal Use / Gullak (निजी खर्च/गुल्लक)"])
+                        t_type = st.selectbox("लेनदेन का प्रकार", [
+                            "Deposit (जमा)", 
+                            "Withdrawal (निकासी)", 
+                            "Personal Use / Gullak (निजी खर्च/गुल्लक)"
+                        ])
                     
                     t_amount = st.number_input("राशि (₹)", min_value=0.0, value=float(auto_amount))
                 
@@ -333,8 +342,12 @@ else:
                 with st.expander(f"⚙️ Entry ID #{selected_id} संपादित करें"):
                     e_col1, e_col2 = st.columns(2)
                     with e_col1:
-                        e_acc = st.selectbox("Account Type", ["Cash", "Bank OD"], index=0 if row_to_edit['account_type']=="Cash" else 1)
-                        e_type = st.selectbox("Type", ["Deposit (जमा)", "Withdrawal (निकासी)", "Personal Use / Gullak (निजी खर्च/गुल्लक)"])
+                        e_acc = st.selectbox("Account Type", ["Cash", "Bank Account"], index=0 if row_to_edit['account_type']=="Cash" else 1)
+                        if e_acc == "Bank Account":
+                            e_type = st.selectbox("Type", ["Withdrawal (बैंक से पैसा निकाला / Cash Laye)", "Deposit (बैंक में जमा किया)"])
+                        else:
+                            e_type = st.selectbox("Type", ["Deposit (जमा)", "Withdrawal (निकासी)", "Personal Use / Gullak (निजी खर्च/गुल्लक)"])
+                        
                         e_amount = st.number_input("Amount", value=float(row_to_edit['amount']), key="edit_amt")
                     with e_col2:
                         e_tx = st.text_input("Txn ID", value=str(row_to_edit['tx_id']), key="edit_tx")
@@ -359,19 +372,19 @@ else:
             curr_op = run_query("SELECT * FROM opening_balances WHERE username=?", (user_id,))
             
             op_c = curr_op.iloc[0]['cash_op'] if not curr_op.empty else 0.0
-            op_od = curr_op.iloc[0]['od_op'] if not curr_op.empty else 0.0
+            op_b = curr_op.iloc[0]['bank_op'] if not curr_op.empty else 0.0
 
             with st.form("op_form"):
                 o1, o2 = st.columns(2)
                 with o1:
                     new_op_c = st.number_input("Cash Opening Balance (₹)", value=float(op_c))
                 with o2:
-                    new_op_od = st.number_input("Bank OD Opening Balance (₹)", value=float(op_od))
+                    new_op_b = st.number_input("Bank Opening Balance (₹)", value=float(op_b))
 
                 if st.form_submit_button("💾 Opening Balances सेव करें"):
-                    execute_db("""INSERT INTO opening_balances (username, cash_op, od_op) VALUES (?, ?, ?)
-                                  ON CONFLICT(username) DO UPDATE SET cash_op=excluded.cash_op, od_op=excluded.od_op""",
-                               (user_id, new_op_c, new_op_od))
+                    execute_db("""INSERT INTO opening_balances (username, cash_op, bank_op) VALUES (?, ?, ?)
+                                  ON CONFLICT(username) DO UPDATE SET cash_op=excluded.cash_op, bank_op=excluded.bank_op""",
+                               (user_id, new_op_c, new_op_b))
                     st.success("✅ Opening Balances अपडेट हो गए हैं!")
                     st.rerun()
 
