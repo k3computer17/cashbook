@@ -43,9 +43,9 @@ def init_db():
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT,
                     date TEXT,
-                    type TEXT,            -- 'Deposit (जमा)', 'Withdrawal (निकासी)', 'Personal Use / Gullak'
+                    type TEXT,            -- 'Deposit', 'Withdrawal', 'Personal Use / Gullak'
                     amount REAL,
-                    account_type TEXT,    -- 'Cash', 'Bank'
+                    account_type TEXT,    -- 'Cash', 'Bank Account'
                     tx_id TEXT,
                     description TEXT
                 )''')
@@ -127,13 +127,6 @@ def parse_text_or_pdf(text):
     return amount, tx_id
 
 def calculate_exact_balances(username):
-    """
-    कैलकुलेशन नियम:
-    - Bank से पैसा निकाला (Bank Withdrawal) -> Cash में जुड़ेगा (+), Bank से घटेगा (-)
-    - Bank में Cash जमा किया (Bank Deposit) -> Bank में जुड़ेगा (+), Cash से घटेगा (-)
-    - Services Income -> Cash में जुड़ेगा (+)
-    - Personal Use / Gullak -> Cash से घटेगा (-)
-    """
     op = run_query("SELECT * FROM opening_balances WHERE username=?", (username,))
     cash_op = op.iloc[0]['cash_op'] if not op.empty else 0.0
     bank_op = op.iloc[0]['bank_op'] if not op.empty else 0.0
@@ -141,7 +134,7 @@ def calculate_exact_balances(username):
     acc_df = run_query("SELECT * FROM accounts WHERE username=?", (username,))
     serv_df = run_query("SELECT * FROM daily_services WHERE username=?", (username,))
     
-    # Services Income
+    # Services Income (Adds directly to Cash)
     services_cash_income = serv_df['income_amount'].sum() if not serv_df.empty else 0.0
     
     # Cash Entries
@@ -155,9 +148,7 @@ def calculate_exact_balances(username):
     bank_wth = bank_df[bank_df['type'] == 'Withdrawal (बैंक से पैसा निकाला / Cash Laye)']['amount'].sum() if not bank_df.empty else 0.0
     bank_dep = bank_df[bank_df['type'] == 'Deposit (बैंक में जमा किया)']['amount'].sum() if not bank_df.empty else 0.0
     
-    # Inter-account Transfer Logic
-    # Bank से निकाला पैसा = Cash में जुड़ा (+), Bank से घटा (-)
-    # Bank में जमा पैसा = Bank में जुड़ा (+), Cash से घटा (-)
+    # Balancing Math
     final_cash_closing = cash_op + cash_dep + services_cash_income + bank_wth - cash_wth - personal_gullak - bank_dep
     final_bank_closing = bank_op + bank_dep - bank_wth
     
