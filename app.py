@@ -4,6 +4,7 @@ from datetime import datetime
 import sqlite3
 import os
 import io
+import urllib.parse
 import pdfplumber
 from reportlab.pdfgen import canvas
 
@@ -24,7 +25,7 @@ def init_db():
                     password TEXT,
                     role TEXT,
                     client_id TEXT,
-                    is_approved INTEGER DEFAULT 0
+                    is_approved INTEGER DEFAULT 1
                 )''')
     
     # Clients Table
@@ -100,20 +101,20 @@ def convert_df_to_excel(df):
 # =========================================================
 # 3. PAGE CONFIG & SESSION
 # =========================================================
-st.set_page_config(page_title="Local Cashbook & ID Generator", page_icon="💻", layout="wide")
+st.set_page_config(page_title="Local Cashbook & Admin Panel", page_icon="💻", layout="wide")
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'user_info' not in st.session_state:
     st.session_state['user_info'] = None
 
-st.title("💻 PC Local Accounting & ID Generator")
+st.title("💻 PC Local Accounting System")
 
 # =========================================================
-# 4. LOGIN & REGISTRATION
+# 4. LOGIN (User & Admin Only - No Public Registration)
 # =========================================================
 if not st.session_state['logged_in']:
-    tab_user_login, tab_admin_login, reg_tab = st.tabs(["👤 User Login", "🔐 Admin Login", "📝 New Registration"])
+    tab_user_login, tab_admin_login = st.tabs(["👤 User Login", "🔐 Admin Login"])
 
     with tab_user_login:
         c_username = st.text_input("User ID", key="c_user")
@@ -127,7 +128,7 @@ if not st.session_state['logged_in']:
                     st.success("✅ लॉगिन सफल!")
                     st.rerun()
                 else:
-                    st.warning("⚠️ आपका अकाउंट अभी पेंडिंग है।")
+                    st.warning("⚠️ आपका अकाउंट अभी निष्क्रिय है।")
             else:
                 st.error("❌ गलत विवरण!")
 
@@ -144,28 +145,6 @@ if not st.session_state['logged_in']:
             else:
                 st.error("❌ गलत Admin विवरण!")
 
-    with reg_tab:
-        c_name = st.text_input("नाम *")
-        c_mobile = st.text_input("मोबाइल *")
-        c_userid = st.text_input("User ID बनाएं *")
-        c_pass = st.text_input("Password बनाएं *", type="password")
-        c_address = st.text_area("पता *")
-
-        if st.button("Register Account"):
-            if all([c_name, c_mobile, c_userid, c_pass, c_address]):
-                auto_id = f"NK-CUST-{1001 + len(run_query('SELECT * FROM clients'))}"
-                today = datetime.now().strftime("%Y-%m-%d")
-                
-                execute_db("INSERT INTO clients (unique_client_id, name, mobile, address, created_date) VALUES (?, ?, ?, ?, ?)",
-                           (auto_id, c_name, c_mobile, c_address, today))
-                
-                execute_db("INSERT INTO users (username, password, role, client_id, is_approved) VALUES (?, ?, 'Customer', ?, 0)",
-                           (c_userid, c_pass, auto_id))
-                
-                st.success(f"✅ रजिस्ट्रेशन सफल हुआ! ID: {auto_id}")
-            else:
-                st.error("सभी फील्ड भरें!")
-
 # =========================================================
 # 5. DASHBOARD (USER & ADMIN)
 # =========================================================
@@ -179,6 +158,7 @@ else:
     user_role = st.session_state['user_info']['role']
     user_id = st.session_state['user_info']['username']
 
+    # ------------------ CUSTOMER PANEL ------------------
     if user_role == "Customer":
         u_tab1, u_tab2, u_tab3 = st.tabs(["📊 दैनिक हिसाब", "📁 PDF & ID Card", "📥 Excel Download"])
 
@@ -215,44 +195,90 @@ else:
             if not my_acc.empty:
                 st.download_button("📊 Excel डेटा डाउनलोड करें", data=convert_df_to_excel(my_acc), file_name="My_Accounts.xlsx")
 
+    # ------------------ MASTER ADMIN PANEL ------------------
     elif user_role == "Admin":
-        st.title("👑 Master Admin Control")
-        admin_tab1, admin_tab2 = st.tabs(["📊 सभी यूजर्स का डेटा", "⚙️ Approvals"])
+        st.title("👑 Admin Control Panel")
+        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["👥 यूजर्स डेटा & ID लिस्ट", "➕ नया यूजर जोड़ें", "📊 खातों का डेटा & Excel"])
 
+        # TAB 1: User IDs and Details First
         with admin_tab1:
-            st.dataframe(run_query("SELECT * FROM accounts"), use_container_width=True)
-            st.download_button("📥 Master Excel डाउनलोड", data=convert_df_to_excel(run_query("SELECT * FROM accounts")), file_name="Master_Data.xlsx")
-
-        with admin_tab2:
-            st.subheader("⏳ पेंडिंग यूजर अप्रूवल")
+            st.subheader("👥 सभी Registered Users की सूची")
             
-            # Users और Clients टेबल को JOIN करके पूरी जानकारी निकालें
-            pending_query = """
-                SELECT u.id as user_db_id, u.username, u.client_id, 
-                       c.name, c.mobile, c.address, c.created_date 
+            user_list_query = """
+                SELECT u.id, u.username, u.password, u.client_id, 
+                       c.name, c.mobile, c.address, c.created_date
                 FROM users u
                 LEFT JOIN clients c ON u.client_id = c.unique_client_id
-                WHERE u.is_approved = 0 AND u.role = 'Customer'
+                WHERE u.role = 'Customer'
+                ORDER BY u.id DESC
             """
-            pending = run_query(pending_query)
-            
-            if pending.empty:
-                st.info("🎉 कोई भी पेंडिंग अप्रूवल नहीं है।")
+            users_data = run_query(user_list_query)
+
+            if not users_data.empty:
+                # Excel Export of All Users
+                st.download_button("📥 सभी यूजर्स डेटा Excel Export करें", 
+                                   data=convert_df_to_excel(users_data), 
+                                   file_name="All_Users_Details.xlsx")
+                st.write("---")
+                
+                # Show dataframe
+                st.dataframe(users_data[['username', 'password', 'client_id', 'name', 'mobile', 'address', 'created_date']], use_container_width=True)
             else:
-                for idx, row in pending.iterrows():
-                    with st.expander(f"👤 {row['name']} ({row['username']}) - ID: {row['client_id']}", expanded=True):
-                        col_info, col_btn = st.columns([3, 1])
+                st.info("अभी कोई यूजर पंजीकृत नहीं है।")
+
+        # TAB 2: Add New User (Registration by Admin Only) & Send WhatsApp Message
+        with admin_tab2:
+            st.subheader("➕ नया यूजर रजिस्टर करें (Admin Only)")
+            
+            with st.form("add_user_form", clear_on_submit=False):
+                col1, col2 = st.columns(2)
+                with col1:
+                    c_name = st.text_input("ग्राहक का नाम *")
+                    c_mobile = st.text_input("मोबाइल नंबर (WhatsApp) *")
+                    c_address = st.text_area("पता *")
+                with col2:
+                    c_userid = st.text_input("User ID बनाएं *")
+                    c_pass = st.text_input("Password बनाएं *")
+
+                submit_reg = st.form_submit_button("पंजीकृत करें")
+
+            if submit_reg:
+                if all([c_name, c_mobile, c_userid, c_pass, c_address]):
+                    # Check if Username already exists
+                    existing = run_query("SELECT * FROM users WHERE username=?", (c_userid,))
+                    if not existing.empty:
+                        st.error("❌ यह User ID पहले से मौजूद है! कृपया दूसरी ID चुनें।")
+                    else:
+                        auto_id = f"NK-CUST-{1001 + len(run_query('SELECT * FROM clients'))}"
+                        today = datetime.now().strftime("%Y-%m-%d")
                         
-                        with col_info:
-                            st.write(f"**नाम:** {row['name']}")
-                            st.write(f"**User ID:** {row['username']}")
-                            st.write(f"**Client ID:** {row['client_id']}")
-                            st.write(f"**मोबाइल:** {row['mobile']}")
-                            st.write(f"**पता:** {row['address']}")
-                            st.write(f"**रजिस्ट्रेशन तारीख:** {row['created_date']}")
+                        execute_db("INSERT INTO clients (unique_client_id, name, mobile, address, created_date) VALUES (?, ?, ?, ?, ?)",
+                                   (auto_id, c_name, c_mobile, c_address, today))
                         
-                        with col_btn:
-                            if st.button("✅ Approve करें", key=f"app_{row['user_db_id']}"):
-                                execute_db("UPDATE users SET is_approved=1 WHERE id=?", (row['user_db_id'],))
-                                st.success(f"{row['name']} का अकाउंट Approve कर दिया गया है!")
-                                st.rerun()
+                        execute_db("INSERT INTO users (username, password, role, client_id, is_approved) VALUES (?, ?, 'Customer', ?, 1)",
+                                   (c_userid, c_pass, auto_id))
+                        
+                        st.success(f"✅ यूजर सफलतापूर्वक जोड़ा गया! Client ID: {auto_id}")
+                        
+                        # Generate WhatsApp link to send User ID & Password
+                        clean_mobile = ''.join(filter(str.isdigit, c_mobile))
+                        if len(clean_mobile) == 10:
+                            clean_mobile = "91" + clean_mobile
+                        
+                        whatsapp_msg = f"नमस्ते {c_name},\nआपका NIKA Services अकाउंट बन गया है।\n\n🆔 *User ID:* {c_userid}\n🔑 *Password:* {c_pass}\n🪪 *Client ID:* {auto_id}\n\nधन्यवाद!"
+                        encoded_msg = urllib.parse.quote(whatsapp_msg)
+                        wa_url = f"https://wa.me/{clean_mobile}?text={encoded_msg}"
+                        
+                        st.markdown(f'<a href="{wa_url}" target="_blank" style="display: inline-block; padding: 10px 20px; background-color: #25D366; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">📲 WhatsApp पर ID & Password भेजें</a>', unsafe_allow_html=True)
+                else:
+                    st.error("⚠️ सभी फील्ड भरना अनिवार्य है!")
+
+        # TAB 3: All Transactions & Master Excel Export
+        with admin_tab3:
+            st.subheader("📊 सभी लेनदेन (Accounts)")
+            all_accounts = run_query("SELECT * FROM accounts ORDER BY id DESC")
+            st.dataframe(all_accounts, use_container_width=True)
+            if not all_accounts.empty:
+                st.download_button("📥 Master Transactions Excel डाउनलोड", 
+                                   data=convert_df_to_excel(all_accounts), 
+                                   file_name="Master_Transactions_Data.xlsx")
