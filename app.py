@@ -37,7 +37,7 @@ def init_db():
                     demo_expiry_date TEXT
                 )''')
     
-    # Dynamic Column Migration (Prevents SQLite OperationalError if schema changed)
+    # Dynamic Column Migration
     existing_cols = [row[1] for row in c.execute("PRAGMA table_info(users)").fetchall()]
     new_cols = {
         "father_name": "TEXT",
@@ -84,7 +84,7 @@ def init_db():
                     bank_op REAL DEFAULT 0.0
                 )''')
     
-    # FORCE RESET / ENSURE OFFICIAL ADMIN ACCOUNT
+    # Force Reset Admin Account
     c.execute("DELETE FROM users WHERE username='admin'")
     c.execute("""INSERT INTO users 
                  (username, password, role, is_approved, is_first_login, full_name, is_paid, kyc_status) 
@@ -186,12 +186,20 @@ st.markdown("""
         border-radius: 4px;
         margin-bottom: 15px;
     }
-    .receipt-box {
-        background: #ffffff;
-        border: 2px dashed #0284c7;
-        padding: 20px;
-        border-radius: 10px;
-        font-family: monospace;
+    .receipt-thermal {
+        width: 280px;
+        background: #fff;
+        color: #000;
+        padding: 12px;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 12px;
+        border: 1px solid #000;
+        margin: auto;
+    }
+    @media print {
+        body * { visibility: hidden; }
+        .receipt-thermal, .receipt-thermal * { visibility: visible; }
+        .receipt-thermal { position: absolute; left: 0; top: 0; width: 100%; }
     }
     </style>
 """, unsafe_allow_html=True)
@@ -297,10 +305,8 @@ else:
     user_role = st.session_state['user_info'].get('role', 'Customer')
     full_name = st.session_state['user_info'].get('full_name', user_id)
     
-    # Refresh current user status from DB
     u_fresh = run_query("SELECT * FROM users WHERE username=?", (user_id,)).iloc[0].to_dict()
     
-    # Top Bar Header
     head_col1, head_col2 = st.columns([3, 1])
     with head_col1:
         st.markdown(f"### 👤 Active Account: {full_name}")
@@ -328,7 +334,6 @@ else:
             "🔒 Admin Security"
         ])
 
-        # TAB 1: KYC & PAID APPROVALS
         with adm_t1:
             st.subheader("👥 User Management & License Activation")
             all_users = run_query("SELECT id, username, full_name, mobile, shop_name, kyc_status, is_paid, demo_expiry_date FROM users WHERE role='Customer'")
@@ -350,15 +355,11 @@ else:
                     st.success(f"✅ User {c_u} updated successfully!")
                     st.rerun()
 
-        # TAB 2: DEMO EXTENSION CONTROL
         with adm_t2:
-            st.subheader("⏳ Extend Demo Validity (3-Day Trial Extension)")
-            st.caption("Aap kisi bhi Demo user ki Expiry Date ko aage badha sakte hain.")
-            
+            st.subheader("⏳ Extend Demo Validity")
             if not all_users.empty:
                 sel_demo_user = st.selectbox("Select Demo User to Extend:", all_users['username'].tolist(), key="demo_ext_sel")
                 d_user_data = all_users[all_users['username'] == sel_demo_user].iloc[0]
-                
                 curr_exp = d_user_data['demo_expiry_date'] if d_user_data['demo_expiry_date'] else datetime.now().strftime('%Y-%m-%d')
                 st.info(f"Current Demo Expiry Date: **{curr_exp}**")
                 
@@ -370,9 +371,8 @@ else:
                     st.success(f"🎉 Demo validity extended till {new_exp_dt} for user {sel_demo_user}!")
                     st.rerun()
 
-        # TAB 3: CREATE USER WITH 3-DAY DEMO
         with adm_t3:
-            st.subheader("➕ Register New Merchant User (Default 3-Day Demo)")
+            st.subheader("➕ Register New Merchant User")
             with st.form("admin_create_user"):
                 fn = st.text_input("Full Name *")
                 fath = st.text_input("Father Name *")
@@ -393,23 +393,17 @@ else:
                                       (username, password, role, is_approved, email, mobile, full_name, father_name, pan_card, aadhaar_no, shop_name, is_first_login, kyc_status, is_paid, created_at, demo_expiry_date) 
                                       VALUES (?, ?, 'Customer', 1, ?, ?, ?, ?, ?, ?, ?, 1, 'Pending', 0, ?, ?)""", 
                                    (generated_uid, generated_pwd, em, mob, fn, fath, pan, adh, shp, created_at, demo_expiry))
-                        st.success(f"🎉 Account Created! ID: {generated_uid} | Pass: {generated_pwd} | Valid Till: {demo_expiry}")
+                        st.success(f"🎉 Account Created! ID: {generated_uid} | Pass: {generated_pwd}")
                     else:
                         st.warning("⚠️ Full Name, Father Name & Mobile Required!")
 
-        # TAB 4: MASTER CASHBOOK
         with adm_t4:
             st.subheader("📊 All Users Master Cashbook Ledger")
             u_list = ["ALL"] + run_query("SELECT username FROM users WHERE role='Customer'")['username'].tolist()
             sel_u = st.selectbox("Filter By Client User:", u_list)
-            
-            if sel_u == "ALL":
-                r_data = run_query("SELECT * FROM accounts ORDER BY id DESC")
-            else:
-                r_data = run_query("SELECT * FROM accounts WHERE username=? ORDER BY id DESC", (sel_u,))
+            r_data = run_query("SELECT * FROM accounts ORDER BY id DESC") if sel_u == "ALL" else run_query("SELECT * FROM accounts WHERE username=? ORDER BY id DESC", (sel_u,))
             st.dataframe(r_data, use_container_width=True)
 
-        # TAB 5: CHANGE ADMIN PASS
         with adm_t5:
             st.subheader("🔒 Change Admin Security Password")
             with st.form("admin_pwd_form"):
@@ -427,40 +421,26 @@ else:
     # B. REGULAR USER / MERCHANT DASHBOARD
     # =========================================================
     else:
-        # Check Expiry & License Logic
         today_str = datetime.now().strftime('%Y-%m-%d')
         demo_expiry_str = u_fresh.get('demo_expiry_date', today_str)
         is_paid = u_fresh.get('is_paid', 0)
-        kyc_status = u_fresh.get('kyc_status', 'Pending')
-
         is_expired = (today_str > demo_expiry_str) if demo_expiry_str else False
 
-        # Demo Expired Screen
         if is_paid == 0 and is_expired:
             st.error(f"🚨 Demo Period Expired on {demo_expiry_str}!")
-            st.warning("Aapka 3 days ka demo version khatam ho chuka hai. Kripya Admin se sampark karke Fees pay karein ya Demo extension lein.")
-            
-            st.write("---")
-            st.subheader("📄 Submit / Update Your KYC Details")
+            st.warning("Aapka 3 days ka demo version khatam ho chuka hai. Kripya Admin se extension lein.")
             with st.form("kyc_submit_form"):
                 k_pan = st.text_input("PAN Card Number", value=u_fresh.get('pan_card', ''))
                 k_adh = st.text_input("Aadhaar Number", value=u_fresh.get('aadhaar_no', ''))
                 k_shop = st.text_input("Shop Name", value=u_fresh.get('shop_name', ''))
                 if st.form_submit_button("📩 Submit KYC for Paid Approval"):
                     execute_db("UPDATE users SET pan_card=?, aadhaar_no=?, shop_name=?, kyc_status='Pending' WHERE username=?", (k_pan, k_adh, k_shop, user_id))
-                    st.success("✅ KYC Submitted! Admin jald hi ise approve karke paid membership activate karega.")
+                    st.success("✅ KYC Submitted!")
                     st.rerun()
 
-        # Active Session Workspace
         else:
-            if is_paid == 1:
-                st.success("🟢 Status: Paid Premium Account Active")
-            else:
-                st.info(f"⏳ Status: 3-Day Demo Version Active (Valid Till: **{demo_expiry_str}**)")
-
             b = calculate_exact_balances(user_id)
 
-            # Dashboard Summary Cards
             c1, c2, c3, c4 = st.columns(4)
             c1.markdown(f"""<div class="metric-card"><div class="metric-title">💵 CASH BALANCE</div><div class="metric-value">₹{b['cash_closing']:,.2f}</div><div class="metric-sub">Opening: ₹{b['cash_op']:,.2f}</div></div>""", unsafe_allow_html=True)
             c2.markdown(f"""<div class="metric-card"><div class="metric-title">🏦 BANK BALANCE</div><div class="metric-value" style="color:#a7f3d0;">₹{b['bank_closing']:,.2f}</div><div class="metric-sub">Opening: ₹{b['bank_op']:,.2f}</div></div>""", unsafe_allow_html=True)
@@ -469,19 +449,18 @@ else:
 
             st.write("---")
 
-            # Main App Tabs
             ut1, ut2, ut3, ut4, ut5, ut6 = st.tabs([
-                "➕ New Transaction", 
-                "🔍 Search Slip & Receipt", 
-                "🛠️ Daily Services Log", 
-                "📋 Full Cashbook", 
-                "⚙️ Opening Balances",
-                "📄 KYC & Profile"
+                "➕ New Entry", 
+                "📖 Customer Ledger & Print", 
+                "✏️ Edit / Delete Entry", 
+                "📋 Full Cashbook & Export", 
+                "🛠️ Daily Services Log",
+                "⚙️ Settings & KYC"
             ])
 
             # TAB 1: NEW TRANSACTION ENTRY
             with ut1:
-                st.markdown('<div class="section-box"><h4>➕ AEPS / Cash Deposit / Withdrawal Entry</h4></div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-box"><h4>➕ New Cashbook Transaction</h4></div>', unsafe_allow_html=True)
                 with st.form("main_txn_form", clear_on_submit=True):
                     fc1, fc2 = st.columns(2)
                     with fc1:
@@ -500,21 +479,14 @@ else:
                                 "Customer Due Payment Received (उधार रिकवरी - Cash +)",
                                 "Personal Use / Gullak (निजी खर्च/गुल्लक)"
                             ])
-                        
                         t_amount = st.number_input("Amount (₹) *", min_value=0.0, step=100.0)
                         t_pay_mode = st.selectbox("Payment Method", ["Cash", "UPI / QR", "AEPS", "IMPS/NEFT", "Card Machine"])
-                        t_tx_id = st.text_input("Txn / UTR / Reference No")
+                        t_tx_id = st.text_input("Txn / UTR Ref No")
                     
                     with fc2:
                         t_cname = st.text_input("Customer Name")
                         t_aadhaar = st.text_input("Aadhaar Last 4 Digits", max_chars=4)
-                        
-                        if t_type == "Customer Due Payment Received (उधार रिकवरी - Cash +)":
-                            t_due = 0.0
-                            st.info("💡 Recovering Due: Cash increases, Pending Udhar decreases.")
-                        else:
-                            t_due = st.number_input("New Due / Udhar (₹)", min_value=0.0, value=0.0, step=50.0)
-                            
+                        t_due = st.number_input("New Udhar / Due Amount (₹)", min_value=0.0, step=50.0) if t_type != "Customer Due Payment Received (उधार रिकवरी - Cash +)" else 0.0
                         t_desc = st.text_input("Description / Notes")
                         t_date = st.date_input("Date", datetime.now())
 
@@ -525,59 +497,108 @@ else:
                                           (username, date, type, amount, account_type, tx_id, cust_name, cust_aadhaar_last4, cust_due_amount, payment_mode, description) 
                                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
                                        (user_id, d_str, t_type, t_amount, t_account, t_tx_id, t_cname, t_aadhaar, t_due, t_pay_mode, t_desc))
-                            st.success("🎉 Transaction Successfully Recorded!")
+                            st.success("🎉 Entry Recorded Successfully!")
                             st.rerun()
-                        else:
-                            st.warning("⚠️ Enter a valid amount!")
 
-            # TAB 2: RECEIPT & SLIP
+            # TAB 2: CUSTOMER LEDGER & PRINT SLIP
             with ut2:
-                st.markdown('<div class="section-box"><h4>🔍 Search Customer Ledger & Generate Slip</h4></div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-box"><h4>📖 Customer Ledger, Thermal Print & Slip</h4></div>', unsafe_allow_html=True)
                 sc1, sc2 = st.columns(2)
-                s_adh = sc1.text_input("Aadhaar Last 4 Digits:")
-                s_nm = sc2.text_input("Customer Name:")
+                s_cname = sc1.text_input("Search Customer Name:")
+                s_adh = sc2.text_input("Search Aadhaar (Last 4):")
 
-                if s_adh or s_nm:
-                    query = "SELECT id, date, type, amount, cust_name, cust_aadhaar_last4, cust_due_amount, payment_mode, tx_id, description FROM accounts WHERE username=? AND "
-                    params = [user_id]
-                    if s_adh:
-                        query += "cust_aadhaar_last4 LIKE ?"
-                        params.append(f"%{s_adh}%")
-                    else:
-                        query += "cust_name LIKE ?"
-                        params.append(f"%{s_nm}%")
+                query = "SELECT * FROM accounts WHERE username=?"
+                params = [user_id]
+                if s_cname:
+                    query += " AND cust_name LIKE ?"
+                    params.append(f"%{s_cname}%")
+                if s_adh:
+                    query += " AND cust_aadhaar_last4 LIKE ?"
+                    params.append(f"%{s_adh}%")
+
+                cust_df = run_query(query, tuple(params))
+                if not cust_df.empty:
+                    st.dataframe(cust_df, use_container_width=True)
                     
-                    cust_df = run_query(query, tuple(params))
-                    if not cust_df.empty:
-                        st.dataframe(cust_df, use_container_width=True)
-                        
-                        st.subheader("🧾 Printable Receipt Generator")
-                        sel_tx_id = st.selectbox("Select Txn ID for Slip:", cust_df['id'].tolist())
-                        tx_row = cust_df[cust_df['id'] == sel_tx_id].iloc[0]
-                        
-                        st.markdown(f"""
-                        <div class="receipt-box">
-                        <h3 style="text-align:center;">{u_fresh.get('shop_name', 'DIGITAL STORE')}</h3>
-                        <p style="text-align:center;">Payment Slip</p>
-                        <hr>
-                        <b>Txn ID:</b> TXN#{tx_row['id']} &nbsp;&nbsp;&nbsp; <b>Date:</b> {tx_row['date']}<br>
+                    st.write("---")
+                    st.subheader("🧾 Print Transaction Slip / Thermal Receipt")
+                    sel_tx_id = st.selectbox("Select Txn ID to Print:", cust_df['id'].tolist())
+                    tx_row = cust_df[cust_df['id'] == sel_tx_id].iloc[0]
+
+                    # Thermal Printable Box
+                    st.markdown(f"""
+                    <div class="receipt-thermal">
+                        <div style="text-align:center;"><b>{u_fresh.get('shop_name', 'DIGITAL STORE')}</b></div>
+                        <div style="text-align:center;">PAYMENT SLIP</div>
+                        --------------------------------<br>
+                        <b>Txn ID:</b> #{tx_row['id']}<br>
+                        <b>Date:</b> {tx_row['date']}<br>
                         <b>Customer:</b> {tx_row['cust_name'] if tx_row['cust_name'] else 'N/A'}<br>
                         <b>Aadhaar (Last 4):</b> {tx_row['cust_aadhaar_last4'] if tx_row['cust_aadhaar_last4'] else 'N/A'}<br>
+                        --------------------------------<br>
                         <b>Type:</b> {tx_row['type']}<br>
                         <b>Mode:</b> {tx_row['payment_mode']}<br>
-                        <hr>
-                        <h2 style="color:#0284c7;">Amount: ₹{tx_row['amount']:,.2f}</h2>
+                        <div style="font-size:14px; font-weight:bold; margin: 5px 0;">AMOUNT: ₹{tx_row['amount']:,.2f}</div>
                         <b>Pending Udhar:</b> ₹{tx_row['cust_due_amount']:,.2f}<br>
-                        <hr>
-                        <p style="text-align:center;">Thank You!</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.info("ℹ️ No Records Found!")
+                        --------------------------------<br>
+                        <div style="text-align:center;">Thank You! Visit Again</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.caption("💡 Use browser **Ctrl+P** to print receipt via 2-inch/3-inch Thermal Printer.")
+                else:
+                    st.info("ℹ️ No customer transactions found.")
 
-            # TAB 3: DAILY SERVICES LOG
+            # TAB 3: EDIT & DELETE TRANSACTION
             with ut3:
-                st.markdown('<div class="section-box"><h4>🛠️ Daily Online Services Tracker</h4></div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-box"><h4>✏️ Edit or Delete Cashbook Transactions</h4></div>', unsafe_allow_html=True)
+                tx_list = run_query("SELECT id, date, cust_name, type, amount FROM accounts WHERE username=? ORDER BY id DESC", (user_id,))
+                
+                if not tx_list.empty:
+                    sel_edit_id = st.selectbox("Select Transaction ID to Modify:", tx_list['id'].tolist())
+                    curr_tx = run_query("SELECT * FROM accounts WHERE id=?", (sel_edit_id,)).iloc[0]
+
+                    with st.form("edit_tx_form"):
+                        e1, e2 = st.columns(2)
+                        with e1:
+                            e_amount = e1.number_input("Amount (₹)", value=float(curr_tx['amount']))
+                            e_cname = e1.text_input("Customer Name", value=str(curr_tx['cust_name'] or ''))
+                            e_adh = e1.text_input("Aadhaar Last 4", value=str(curr_tx['cust_aadhaar_last4'] or ''))
+                        with e2:
+                            e_due = e2.number_input("Udhar / Due Amount (₹)", value=float(curr_tx['cust_due_amount']))
+                            e_desc = e2.text_input("Description", value=str(curr_tx['description'] or ''))
+                            e_mode = e2.selectbox("Payment Mode", ["Cash", "UPI / QR", "AEPS", "IMPS/NEFT", "Card Machine"], index=0)
+
+                        btn_update = st.form_submit_button("💾 Update Transaction")
+                        if btn_update:
+                            execute_db("""UPDATE accounts 
+                                          SET amount=?, cust_name=?, cust_aadhaar_last4=?, cust_due_amount=?, description=?, payment_mode=? 
+                                          WHERE id=?""", 
+                                       (e_amount, e_cname, e_adh, e_due, e_desc, e_mode, sel_edit_id))
+                            st.success("✅ Transaction Updated!")
+                            st.rerun()
+
+                    st.write("---")
+                    if st.button("🗑️ Delete This Transaction", type="primary"):
+                        execute_db("DELETE FROM accounts WHERE id=?", (sel_edit_id,))
+                        st.success("❌ Transaction Deleted!")
+                        st.rerun()
+
+            # TAB 4: FULL CASHBOOK & PDF/EXCEL EXPORT
+            with ut4:
+                st.markdown('<div class="section-box"><h4>📋 Full Cashbook Ledger & Export Options</h4></div>', unsafe_allow_html=True)
+                all_txns = run_query("SELECT id, date, account_type, type, amount, cust_name, cust_aadhaar_last4, cust_due_amount, payment_mode, tx_id, description FROM accounts WHERE username=? ORDER BY id DESC", (user_id,))
+                st.dataframe(all_txns, use_container_width=True)
+                
+                exp_c1, exp_c2 = st.columns(2)
+                with exp_c1:
+                    st.download_button("📥 Export Cashbook (Excel)", data=convert_df_to_excel(all_txns), file_name="Complete_Cashbook.xlsx", use_container_width=True)
+                with exp_c2:
+                    st.download_button("📄 Export Cashbook (CSV / PDF Ready)", data=all_txns.to_csv(index=False).encode('utf-8'), file_name="Complete_Cashbook.csv", mime="text/csv", use_container_width=True)
+
+            # TAB 5: DAILY SERVICES LOG
+            with ut5:
+                st.markdown('<div class="section-box"><h4>🛠️ Daily Services & Commission Income</h4></div>', unsafe_allow_html=True)
                 with st.form("services_entry", clear_on_submit=True):
                     svc1, svc2 = st.columns(2)
                     with svc1:
@@ -595,16 +616,9 @@ else:
 
                 st.dataframe(run_query("SELECT date, service_name, ref_no, income_amount, notes FROM daily_services WHERE username=? ORDER BY id DESC", (user_id,)), use_container_width=True)
 
-            # TAB 4: FULL HISTORY EXCEL
-            with ut4:
-                st.markdown('<div class="section-box"><h4>📋 Complete Transaction Cashbook</h4></div>', unsafe_allow_html=True)
-                all_txns = run_query("SELECT id, date, account_type, type, amount, cust_name, cust_aadhaar_last4, cust_due_amount, payment_mode, tx_id, description FROM accounts WHERE username=? ORDER BY id DESC", (user_id,))
-                st.dataframe(all_txns, use_container_width=True)
-                st.download_button("📥 Export Cashbook Excel", data=convert_df_to_excel(all_txns), file_name="Complete_Cashbook.xlsx")
-
-            # TAB 5: OPENING BALANCES
-            with ut5:
-                st.markdown('<div class="section-box"><h4>⚙️ Account Opening Balances Setup</h4></div>', unsafe_allow_html=True)
+            # TAB 6: SETTINGS & OPENING BALANCES
+            with ut6:
+                st.markdown('<div class="section-box"><h4>⚙️ Account Settings & Opening Balances</h4></div>', unsafe_allow_html=True)
                 curr_op = run_query("SELECT * FROM opening_balances WHERE username=?", (user_id,))
                 op_c = curr_op.iloc[0]['cash_op'] if not curr_op.empty else 0.0
                 op_b = curr_op.iloc[0]['bank_op'] if not curr_op.empty else 0.0
@@ -619,12 +633,3 @@ else:
                                    (user_id, nc, nb))
                         st.success("✅ Opening Balances Saved!")
                         st.rerun()
-
-            # TAB 6: PROFILE & KYC
-            with ut6:
-                st.markdown('<div class="section-box"><h4>📄 Account Status & Profile</h4></div>', unsafe_allow_html=True)
-                st.write(f"**Full Name:** {u_fresh.get('full_name')}")
-                st.write(f"**Shop Name:** {u_fresh.get('shop_name')}")
-                st.write(f"**KYC Status:** {u_fresh.get('kyc_status')}")
-                st.write(f"**Subscription Status:** {'Paid User' if u_fresh.get('is_paid') == 1 else 'Demo Account'}")
-                st.write(f"**Demo Expiry Date:** {u_fresh.get('demo_expiry_date')}")
