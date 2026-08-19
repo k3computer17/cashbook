@@ -15,7 +15,7 @@ def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
     
-    # Users Table (Admin ID and Users kept separate)
+    # Users Table
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE,
@@ -67,15 +67,10 @@ def init_db():
                     bank_op REAL DEFAULT 0.0
                 )''')
     
-    # Migrations for New Features
-    existing_acc_cols = [col[1] for col in c.execute("PRAGMA table_info(accounts)").fetchall()]
-    if "payment_mode" not in existing_acc_cols:
-        c.execute("ALTER TABLE accounts ADD COLUMN payment_mode TEXT DEFAULT 'Cash'")
-
-    # Default Official Admin Pin
+    # Ensure Default Official Admin Account
     c.execute("SELECT * FROM users WHERE role='Official_Admin'")
     if not c.fetchone():
-        c.execute("INSERT INTO users (username, password, role, is_approved, is_first_login) VALUES ('official_sec_root', 'admin123', 'Official_Admin', 1, 0)")
+        c.execute("INSERT INTO users (username, password, role, is_approved, is_first_login) VALUES ('admin', 'admin123', 'Official_Admin', 1, 0)")
     
     conn.commit()
     conn.close()
@@ -83,7 +78,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 2. HELPER FUNCTIONS & CALCULATIONS
+# 2. HELPER FUNCTIONS
 # =========================================================
 def run_query(query, params=()):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -149,9 +144,9 @@ def calculate_exact_balances(username):
     }
 
 # =========================================================
-# 3. ADVANCED STYLING (UI/UX)
+# 3. PAGE CONFIG & STYLING
 # =========================================================
-st.set_page_config(page_title="Digital Cashbook & Portal", page_icon="🏦", layout="wide")
+st.set_page_config(page_title="Digital Cashbook Portal", page_icon="🏦", layout="wide")
 
 st.markdown("""
     <style>
@@ -188,137 +183,166 @@ if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'user_info' not in st.session_state:
     st.session_state['user_info'] = None
-if 'official_admin_mode' not in st.session_state:
-    st.session_state['official_admin_mode'] = False
 if 'force_password_change' not in st.session_state:
     st.session_state['force_password_change'] = False
 
 # =========================================================
-# 4. USER LOGIN ONLY (ADMIN FULLY HIDDEN FROM LOGIN UI)
+# 4. LOGIN & AUTHENTICATION PORTALS (USER / ADMIN / FORGOT)
 # =========================================================
 if st.session_state['force_password_change']:
-    st.warning("🔒 सुरक्षा अपडेट: कृपया अपना नया स्थायी पासवर्ड (Permanent Password) बनाएं।")
+    st.warning("🔒 First Time Login: Please set your new permanent password.")
     with st.form("first_time_pwd_form"):
-        new_pwd = st.text_input("नया पासवर्ड (New Password) *", type="password")
-        confirm_pwd = st.text_input("पासवर्ड की पुष्टि करें *", type="password")
+        new_pwd = st.text_input("New Password *", type="password")
+        confirm_pwd = st.text_input("Confirm New Password *", type="password")
         
-        if st.form_submit_button("💾 नया पासवर्ड सेट करें"):
+        if st.form_submit_button("💾 Save New Password"):
             if new_pwd and confirm_pwd and (new_pwd == confirm_pwd):
                 user_id = st.session_state['user_info']['username']
                 execute_db("UPDATE users SET password=?, is_first_login=0 WHERE username=?", (new_pwd, user_id))
-                st.success("✅ पासवर्ड अपडेट हो गया!")
+                st.success("✅ Password updated successfully!")
                 st.session_state['force_password_change'] = False
                 st.session_state['user_info']['is_first_login'] = 0
                 st.rerun()
             else:
-                st.error("❌ पासवर्ड मैच नहीं हुए!")
+                st.error("❌ Passwords do not match!")
 
 elif not st.session_state['logged_in']:
     st.title("🏦 Digital Cashbook & Merchant Portal")
-    st.caption("🔐 Standard User Login Window")
     
-    with st.form("user_only_login"):
-        c_username = st.text_input("User ID / Client Username")
-        c_password = st.text_input("Password", type="password")
-        if st.form_submit_button("🔑 Login To Account", use_container_width=True):
-            # Explicitly restrict to Customer role only
-            u_df = run_query("SELECT * FROM users WHERE username=? AND password=? AND role='Customer'", (c_username, c_password))
-            if not u_df.empty:
-                user_data = u_df.iloc[0].to_dict()
-                st.session_state['logged_in'] = True
-                st.session_state['user_info'] = user_data
-                if user_data.get('is_first_login') == 1:
-                    st.session_state['force_password_change'] = True
-                st.rerun()
-            else:
-                st.error("❌ Invalid User Credentials!")
+    login_tab1, login_tab2, login_tab3 = st.tabs([
+        "👤 Merchant / User Login", 
+        "🔑 Forgot Password (User Recovery)", 
+        "🛡️ Official Admin Portal"
+    ])
 
-    # OFFICIAL POWER / PIN SWITCH AT BOTTOM (OUTSIDE LOGIN FORM)
-    st.write("---")
-    with st.expander("⚡ Official Pin Header Switch (Restricted Access)"):
-        off_pass = st.text_input("Enter Official Key / Pin:", type="password", key="off_pass_login")
-        if st.button("🔌 Toggle Power Switch (Official Access)"):
-            chk = run_query("SELECT * FROM users WHERE role='Official_Admin' AND password=?", (off_pass,))
-            if not chk.empty or off_pass == "admin123":
-                # Create a temporary admin session
-                st.session_state['logged_in'] = True
-                st.session_state['official_admin_mode'] = True
-                st.session_state['user_info'] = {"username": "OFFICIAL_ADMIN", "full_name": "Official Controller", "role": "Official_Admin"}
-                st.success("✅ Official Admin System Override Activated!")
-                st.rerun()
-            else:
-                st.error("❌ Unauthorized Key Entry!")
+    # ---------------------------------------------------------
+    # TAB 1: USER LOGIN PORTAL
+    # ---------------------------------------------------------
+    with login_tab1:
+        st.subheader("👤 User Login Window")
+        with st.form("user_login_form"):
+            u_username = st.text_input("User ID / Username")
+            u_password = st.text_input("Password", type="password")
+            if st.form_submit_button("🔑 User Login", use_container_width=True):
+                # Restrict strictly to Customer role
+                chk_user = run_query("SELECT * FROM users WHERE username=? AND password=? AND role='Customer'", (u_username, u_password))
+                if not chk_user.empty:
+                    user_data = chk_user.iloc[0].to_dict()
+                    st.session_state['logged_in'] = True
+                    st.session_state['user_info'] = user_data
+                    if user_data.get('is_first_login') == 1:
+                        st.session_state['force_password_change'] = True
+                    st.rerun()
+                else:
+                    st.error("❌ Invalid User ID or Password!")
+
+    # ---------------------------------------------------------
+    # TAB 2: FORGOT USER PASSWORD (VERIFICATION BASED)
+    # ---------------------------------------------------------
+    with login_tab2:
+        st.subheader("🔍 Account Verification & Password Reset")
+        st.caption("Enter your exact profile details to reset your password.")
+        
+        with st.form("forgot_password_form"):
+            f_uid = st.text_input("User ID *")
+            f_fullname = st.text_input("Full Name *")
+            f_father = st.text_input("Father Name *")
+            f_mobile = st.text_input("Registered Mobile Number *")
+            
+            st.write("---")
+            f_new_pwd = st.text_input("New Password *", type="password")
+            f_confirm_pwd = st.text_input("Confirm New Password *", type="password")
+
+            if st.form_submit_button("🔄 Verify & Reset Password", use_container_width=True):
+                if f_uid and f_fullname and f_father and f_mobile and f_new_pwd:
+                    if f_new_pwd != f_confirm_pwd:
+                        st.error("❌ New Password and Confirm Password do not match!")
+                    else:
+                        # Verify user record
+                        chk_val = run_query("""SELECT * FROM users 
+                                               WHERE username=? AND TRIM(LOWER(full_name))=TRIM(LOWER(?)) 
+                                               AND TRIM(LOWER(father_name))=TRIM(LOWER(?)) AND mobile=? AND role='Customer'""", 
+                                            (f_uid, f_fullname, f_father, f_mobile))
+                        if not chk_val.empty:
+                            execute_db("UPDATE users SET password=?, is_first_login=0 WHERE username=?", (f_new_pwd, f_uid))
+                            st.success("🎉 Verification successful! Password updated. You can now login in the User Login tab.")
+                        else:
+                            st.error("❌ Details mismatch! Please enter exact details provided during registration.")
+                else:
+                    st.warning("⚠️ All fields are mandatory for security verification.")
+
+    # ---------------------------------------------------------
+    # TAB 3: SEPARATE ADMIN LOGIN PORTAL
+    # ---------------------------------------------------------
+    with login_tab3:
+        st.subheader("🛡️ Isolated Admin Login Window")
+        with st.form("admin_login_form"):
+            a_username = st.text_input("Admin Username")
+            a_password = st.text_input("Admin Passcode", type="password")
+            if st.form_submit_button("🔌 Admin Login Override", use_container_width=True):
+                chk_admin = run_query("SELECT * FROM users WHERE username=? AND password=? AND role='Official_Admin'", (a_username, a_password))
+                if not chk_admin.empty:
+                    admin_data = chk_admin.iloc[0].to_dict()
+                    st.session_state['logged_in'] = True
+                    st.session_state['user_info'] = admin_data
+                    st.rerun()
+                else:
+                    st.error("❌ Access Denied: Invalid Admin Credentials!")
 
 # =========================================================
-# 5. USER PORTAL & OFFICIAL ADMIN CONTROLLER
+# 5. DASHBOARD WORKSPACE (USER OR ADMIN)
 # =========================================================
 else:
     user_id = st.session_state['user_info']['username']
+    user_role = st.session_state['user_info'].get('role', 'Customer')
     full_name = st.session_state['user_info'].get('full_name', user_id)
     
-    # Header Bar
+    # Top Header
     head_col1, head_col2 = st.columns([3, 1])
     with head_col1:
-        st.markdown(f"### 👤 Welcome, {full_name}")
-        st.caption(f"Shop: {st.session_state['user_info'].get('shop_name', 'General Store')} | ID: {user_id}")
+        st.markdown(f"### 👤 Active Account: {full_name}")
+        st.caption(f"Role: **{user_role}** | ID: `{user_id}`")
     
     with head_col2:
-        if st.session_state.get('official_admin_mode', False):
-            if st.button("🔴 OFF Official Switch", use_container_width=True, type="primary"):
-                st.session_state['official_admin_mode'] = False
-                st.session_state['logged_in'] = False
-                st.rerun()
-        else:
-            # OFFICIAL POWER SWITCH FOR LOGGED-IN USERS
-            if st.button("⚡ Official Power Switch", use_container_width=True):
-                st.session_state['show_off_dialog'] = True
-
-    # Security Access Modal
-    if st.session_state.get('show_off_dialog', False) and not st.session_state['official_admin_mode']:
-        with st.expander("🔐 Official Key Authentication", expanded=True):
-            pin_input = st.text_input("Official Pin Header Passcode:", type="password")
-            p_c1, p_c2 = st.columns(2)
-            if p_c1.button("Activate Official Control"):
-                chk = run_query("SELECT * FROM users WHERE role='Official_Admin' AND password=?", (pin_input,))
-                if not chk.empty or pin_input == "admin123":
-                    st.session_state['official_admin_mode'] = True
-                    st.session_state['show_off_dialog'] = False
-                    st.rerun()
-                else:
-                    st.error("❌ Access Denied!")
-            if p_c2.button("Close"):
-                st.session_state['show_off_dialog'] = False
-                st.rerun()
-
-    st.sidebar.markdown(f"**Current Active User:** {user_id}")
-    if st.sidebar.button("🚪 Logout", use_container_width=True):
-        st.session_state['logged_in'] = False
-        st.session_state['user_info'] = None
-        st.session_state['official_admin_mode'] = False
-        st.rerun()
+        if st.button("🚪 Logout Account", use_container_width=True, type="primary"):
+            st.session_state['logged_in'] = False
+            st.session_state['user_info'] = None
+            st.session_state['force_password_change'] = False
+            st.rerun()
 
     st.write("---")
 
     # =========================================================
-    # IF OFFICIAL SWITCH IS ACTIVE -> SHOW OFFICIAL MASTER CONTROLS
+    # A. ADMIN DASHBOARD WORKSPACE
     # =========================================================
-    if st.session_state.get('official_admin_mode', False):
-        st.warning("⚡ **OFFICIAL POWER SWITCH IS ON** (Master Administrative Panel)")
-        adm_t1, adm_t2, adm_t3 = st.tabs(["📊 Master Database View", "👥 Users Master List", "➕ Add New User Account"])
+    if user_role == "Official_Admin":
+        st.success("🛡️ Welcome Admin! Master Control Active.")
+        
+        adm_t1, adm_t2, adm_t3, adm_t4 = st.tabs([
+            "📊 Master Cashbook Ledger", 
+            "👥 Registered Users List", 
+            "➕ Add New User Account", 
+            "🔒 Change Admin Password"
+        ])
 
         with adm_t1:
-            st.markdown('<div class="section-box"><h4>📊 All Users Cashbook Ledger Master</h4></div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-box"><h4>📊 All Users Master Cashbook Ledger</h4></div>', unsafe_allow_html=True)
             u_list = ["ALL"] + run_query("SELECT username FROM users WHERE role='Customer'")['username'].tolist()
-            sel_u = st.selectbox("Select Client User:", u_list)
-            r_data = run_query("SELECT * FROM accounts ORDER BY id DESC") if sel_u == "ALL" else run_query("SELECT * FROM accounts WHERE username=? ORDER BY id DESC", (sel_u,))
+            sel_u = st.selectbox("Filter By Client User:", u_list)
+            
+            if sel_u == "ALL":
+                r_data = run_query("SELECT * FROM accounts ORDER BY id DESC")
+            else:
+                r_data = run_query("SELECT * FROM accounts WHERE username=? ORDER BY id DESC", (sel_u,))
             st.dataframe(r_data, use_container_width=True)
 
         with adm_t2:
-            st.markdown('<div class="section-box"><h4>👥 Registered Client Directory</h4></div>', unsafe_allow_html=True)
-            st.dataframe(run_query("SELECT id, username, full_name, father_name, shop_name, mobile, email FROM users WHERE role='Customer'"), use_container_width=True)
+            st.markdown('<div class="section-box"><h4>👥 Registered Merchant Directory</h4></div>', unsafe_allow_html=True)
+            users_df = run_query("SELECT id, username, password, full_name, father_name, shop_name, mobile, email FROM users WHERE role='Customer'")
+            st.dataframe(users_df, use_container_width=True)
 
         with adm_t3:
-            st.markdown('<div class="section-box"><h4>➕ Generate New User Credentials</h4></div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-box"><h4>➕ Register New Merchant User</h4></div>', unsafe_allow_html=True)
             with st.form("admin_create_user"):
                 c_c1, c_c2 = st.columns(2)
                 with c_c1:
@@ -327,28 +351,47 @@ else:
                     shp = st.text_input("Shop Name *")
                     mob = st.text_input("Mobile No *")
                 with c_c2:
-                    em = st.text_input("Email ID *")
+                    em = st.text_input("Email ID")
                     pan = st.text_input("PAN Card")
                     adh = st.text_input("Aadhaar No")
                 if st.form_submit_button("🚀 Create Account"):
-                    if fn and mob:
+                    if fn and mob and fath:
                         generated_uid = generate_auto_userid(fn, mob)
                         generated_pwd = generate_one_time_password(6)
                         execute_db("""INSERT INTO users 
                                       (username, password, role, is_approved, email, mobile, full_name, father_name, pan_card, aadhaar_no, shop_name, is_first_login) 
                                       VALUES (?, ?, 'Customer', 1, ?, ?, ?, ?, ?, ?, ?, 1)""", 
                                    (generated_uid, generated_pwd, em, mob, fn, fath, pan, adh, shp))
-                        st.success(f"🎉 Created User! ID: {generated_uid} | Temp Pass: {generated_pwd}")
+                        st.success(f"🎉 Created User! User ID: {generated_uid} | Temp Pass: {generated_pwd}")
                     else:
-                        st.warning("⚠️ Name and Mobile required!")
+                        st.warning("⚠️ Full Name, Father Name & Mobile Required!")
+
+        with adm_t4:
+            st.markdown('<div class="section-box"><h4>🔒 Change Admin Security Password</h4></div>', unsafe_allow_html=True)
+            with st.form("admin_change_pwd_form"):
+                curr_adm_pass = st.text_input("Current Admin Password", type="password")
+                new_adm_pass = st.text_input("New Admin Password", type="password")
+                conf_adm_pass = st.text_input("Confirm New Password", type="password")
+                
+                if st.form_submit_button("💾 Save Admin Password"):
+                    if curr_adm_pass and new_adm_pass and conf_adm_pass:
+                        if new_adm_pass != conf_adm_pass:
+                            st.error("❌ Passwords do not match!")
+                        else:
+                            chk_curr = run_query("SELECT * FROM users WHERE username=? AND password=?", (user_id, curr_adm_pass))
+                            if not chk_curr.empty:
+                                execute_db("UPDATE users SET password=? WHERE username=?", (new_adm_pass, user_id))
+                                st.success("✅ Admin password updated successfully!")
+                            else:
+                                st.error("❌ Current password incorrect!")
 
     # =========================================================
-    # MULTI-FEATURED USER DASHBOARD WORKSPACE
+    # B. REGULAR USER / MERCHANT DASHBOARD WORKSPACE
     # =========================================================
     else:
         b = calculate_exact_balances(user_id)
 
-        # Dashboard Metrics
+        # Dashboard Summary Cards
         c1, c2, c3, c4 = st.columns(4)
         c1.markdown(f"""<div class="metric-card"><div class="metric-title">💵 CASH BALANCE</div><div class="metric-value">₹{b['cash_closing']:,.2f}</div><div class="metric-sub">Opening: ₹{b['cash_op']:,.2f}</div></div>""", unsafe_allow_html=True)
         c2.markdown(f"""<div class="metric-card"><div class="metric-title">🏦 BANK BALANCE</div><div class="metric-value" style="color:#a7f3d0;">₹{b['bank_closing']:,.2f}</div><div class="metric-sub">Opening: ₹{b['bank_op']:,.2f}</div></div>""", unsafe_allow_html=True)
@@ -357,10 +400,10 @@ else:
 
         st.write("---")
 
-        # Feature-Rich Tabs Layout
+        # Feature Tabs
         ut1, ut2, ut3, ut4, ut5, ut6 = st.tabs([
             "➕ New Transaction", 
-            "🔍 Customer Ledger & Receipt", 
+            "🔍 Customer Ledger & Slip", 
             "🛠️ Daily Services Log", 
             "📊 Analytics & Summary",
             "📋 Full Cashbook", 
@@ -439,27 +482,26 @@ else:
                 if not cust_df.empty:
                     st.dataframe(cust_df, use_container_width=True)
                     
-                    # Digital Slip Generator
-                    st.subheader("🧾 Digital Transaction Receipt Generator")
-                    sel_tx_id = st.selectbox("Select Transaction ID for Receipt:", cust_df['id'].tolist())
+                    # Receipt Generator
+                    st.subheader("🧾 Printable Receipt Generator")
+                    sel_tx_id = st.selectbox("Select Txn ID for Slip:", cust_df['id'].tolist())
                     tx_row = cust_df[cust_df['id'] == sel_tx_id].iloc[0]
                     
                     st.markdown(f"""
                     <div class="receipt-box">
-                    <h3 style="text-align:center;">{st.session_state['user_info'].get('shop_name', 'DIGITAL CASHBOOK STORE')}</h3>
-                    <p style="text-align:center;">Transaction Receipt</p>
+                    <h3 style="text-align:center;">{st.session_state['user_info'].get('shop_name', 'DIGITAL STORE')}</h3>
+                    <p style="text-align:center;">Payment Slip</p>
                     <hr>
                     <b>Txn ID:</b> TXN#{tx_row['id']} &nbsp;&nbsp;&nbsp; <b>Date:</b> {tx_row['date']}<br>
-                    <b>Customer Name:</b> {tx_row['cust_name'] if tx_row['cust_name'] else 'N/A'}<br>
+                    <b>Customer:</b> {tx_row['cust_name'] if tx_row['cust_name'] else 'N/A'}<br>
                     <b>Aadhaar (Last 4):</b> {tx_row['cust_aadhaar_last4'] if tx_row['cust_aadhaar_last4'] else 'N/A'}<br>
                     <b>Type:</b> {tx_row['type']}<br>
-                    <b>Payment Mode:</b> {tx_row['payment_mode']}<br>
-                    <b>Ref No / UTR:</b> {tx_row['tx_id']}<br>
+                    <b>Mode:</b> {tx_row['payment_mode']}<br>
                     <hr>
                     <h2 style="color:#0284c7;">Amount: ₹{tx_row['amount']:,.2f}</h2>
                     <b>Pending Udhar:</b> ₹{tx_row['cust_due_amount']:,.2f}<br>
                     <hr>
-                    <p style="text-align:center;">Thank You! Visit Again.</p>
+                    <p style="text-align:center;">Thank You!</p>
                     </div>
                     """, unsafe_allow_html=True)
                 else:
@@ -467,7 +509,7 @@ else:
 
         # TAB 3: DAILY SERVICES LOG
         with ut3:
-            st.markdown('<div class="section-box"><h4>🛠️ Online Services & Commission Tracker</h4></div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-box"><h4>🛠️ Daily Online Services Tracker</h4></div>', unsafe_allow_html=True)
             with st.form("services_entry", clear_on_submit=True):
                 svc1, svc2 = st.columns(2)
                 with svc1:
@@ -485,12 +527,12 @@ else:
 
             st.dataframe(run_query("SELECT date, service_name, ref_no, income_amount, notes FROM daily_services WHERE username=? ORDER BY id DESC", (user_id,)), use_container_width=True)
 
-        # TAB 4: ANALYTICS & SUMMARY (NEW FEATURE)
+        # TAB 4: ANALYTICS & SUMMARY
         with ut4:
-            st.markdown('<div class="section-box"><h4>📊 Business Analytics & Income Breakdown</h4></div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-box"><h4>📊 Business Analytics & Chart Summary</h4></div>', unsafe_allow_html=True)
             acc_data = run_query("SELECT type, amount, payment_mode FROM accounts WHERE username=?", (user_id,))
             if not acc_data.empty:
-                st.subheader("💳 Payment Mode Distribution")
+                st.subheader("💳 Payment Method Distribution")
                 pay_summary = acc_data.groupby('payment_mode')['amount'].sum().reset_index()
                 st.bar_chart(pay_summary.set_index('payment_mode'))
             else:
@@ -518,5 +560,5 @@ else:
                     execute_db("""INSERT INTO opening_balances (username, cash_op, bank_op) VALUES (?, ?, ?)
                                   ON CONFLICT(username) DO UPDATE SET cash_op=excluded.cash_op, bank_op=excluded.bank_op""",
                                (user_id, nc, nb))
-                    st.success("✅ Balances Saved!")
+                    st.success("✅ Opening Balances Saved!")
                     st.rerun()
