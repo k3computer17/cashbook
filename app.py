@@ -3,6 +3,9 @@ import pandas as pd
 from datetime import datetime
 import sqlite3
 import io
+import smtplib
+import urllib.parse
+from email.mime.text import MIMEText
 
 # =========================================================
 # 1. DATABASE INITIALIZATION & AUTO-MIGRATION LOGIC
@@ -20,7 +23,9 @@ def init_db():
                     password TEXT,
                     role TEXT,
                     client_id TEXT,
-                    is_approved INTEGER DEFAULT 1
+                    is_approved INTEGER DEFAULT 1,
+                    email TEXT,
+                    mobile TEXT
                 )''')
     
     # Clients Table
@@ -48,15 +53,21 @@ def init_db():
                     description TEXT
                 )''')
 
-    # AUTO-MIGRATION
+    # AUTO-MIGRATION FOR ACCOUNTS
     existing_cols = [col[1] for col in c.execute("PRAGMA table_info(accounts)").fetchall()]
-    
     if "cust_name" not in existing_cols:
         c.execute("ALTER TABLE accounts ADD COLUMN cust_name TEXT")
     if "cust_aadhaar_last4" not in existing_cols:
         c.execute("ALTER TABLE accounts ADD COLUMN cust_aadhaar_last4 TEXT")
     if "cust_due_amount" not in existing_cols:
         c.execute("ALTER TABLE accounts ADD COLUMN cust_due_amount REAL DEFAULT 0.0")
+
+    # AUTO-MIGRATION FOR USERS
+    existing_user_cols = [col[1] for col in c.execute("PRAGMA table_info(users)").fetchall()]
+    if "email" not in existing_user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN email TEXT")
+    if "mobile" not in existing_user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN mobile TEXT")
 
     # Daily Services Log Table
     c.execute('''CREATE TABLE IF NOT EXISTS daily_services (
@@ -87,7 +98,7 @@ def init_db():
 init_db()
 
 # =========================================================
-# 2. HELPER FUNCTIONS & BALANCING LOGIC
+# 2. HELPER FUNCTIONS, EMAIL & WHATSAPP LOGIC
 # =========================================================
 def run_query(query, params=()):
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -107,6 +118,41 @@ def convert_df_to_excel(df):
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Report')
     return output.getvalue()
+
+def send_credentials_email(target_email, username, password):
+    # ⚠️ Apni Gmail Details Aur App Password Yahan Dalein
+    sender_email = "your_email@gmail.com" 
+    sender_password = "your_app_password"  # Gmail App Password
+    
+    app_link = "https://your-app-link.streamlit.app"  # Apne deployed app ka link yahan dalein
+    
+    subject = "आपका Cashbook System Login Details"
+    body = f"""नमस्ते {username},
+
+आपका Cashbook System अकाउंट सफलता से बना दिया गया है। 
+
+लॉगिन करने के विवरण नीचे दिए गए हैं:
+🔗 Login Link: {app_link}
+👤 User ID: {username}
+🔑 Password: {password}
+
+धन्यवाद!
+Digital Banking Cashbook System
+"""
+    
+    msg = MIMEText(body)
+    msg['Subject'] = subject
+    msg['From'] = sender_email
+    msg['To'] = target_email
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, target_email, msg.as_string())
+        return True
+    except Exception as e:
+        st.error(f"❌ Email भेज़ने में एरर आया: {e}")
+        return False
 
 def calculate_exact_balances(username):
     op = run_query("SELECT * FROM opening_balances WHERE username=?", (username,))
@@ -220,7 +266,6 @@ else:
         with ut1:
             st.subheader("➕ AEPS / Cash / Deposit Transaction Entry")
             
-            # Form reset action helper
             if st.button("🔄 New Entry / Clear Form (नया फॉर्म शुरू करें)", help="गलती से बचने के लिए फॉर्म को साफ़ करें"):
                 st.rerun()
 
@@ -405,20 +450,47 @@ else:
                 
                 st.dataframe(rep_data, height=450, use_container_width=True)
 
-        # ADMIN TAB 2: USERS LIST
+        # ADMIN TAB 2: USERS LIST (Including Email and Mobile Info)
         with adm_t2:
-            st.subheader("👥 सभी पंजीकृत यूजर्स")
-            users_df = run_query("SELECT id, username, password, client_id FROM users WHERE role='Customer'")
+            st.subheader("👥 सभी पंजीकृत यूजर्स (Complete Details)")
+            users_df = run_query("SELECT id, username, password, email, mobile, client_id FROM users WHERE role='Customer'")
             st.dataframe(users_df, use_container_width=True)
 
-        # ADMIN TAB 3: ADD USER
+        # ADMIN TAB 3: ADD USER & AUTOMATIC CREDENTIALS SHARE
         with adm_t3:
-            st.subheader("➕ नया यूजर बनाएं")
+            st.subheader("➕ नया यूजर बनाएं (Admin Only)")
             with st.form("add_user"):
-                u_name = st.text_input("User ID *")
-                u_pass = st.text_input("Password *")
-                if st.form_submit_button("यूजर जोड़ें"):
+                u_name = st.text_input("User ID / Username *")
+                u_pass = st.text_input("Password *", type="password")
+                u_email = st.text_input("User Email ID")
+                u_mobile = st.text_input("User Mobile Number (WhatsApp me 10 digits)")
+                
+                submit_user = st.form_submit_button("✅ नया यूजर बनाएं एवं विवरण भेजें")
+                
+                if submit_user:
                     if u_name and u_pass:
-                        execute_db("INSERT INTO users (username, password, role, is_approved) VALUES (?, ?, 'Customer', 1)", (u_name, u_pass))
-                        st.success("✅ नया यूजर बन गया!")
-                        st.rerun()
+                        try:
+                            execute_db(
+                                "INSERT INTO users (username, password, role, is_approved, email, mobile) VALUES (?, ?, 'Customer', 1, ?, ?)", 
+                                (u_name, u_pass, u_email, u_mobile)
+                            )
+                            st.success(f"✅ नया यूजर '{u_name}' सफलता से रजिस्टर हो गया!")
+                            
+                            # Send Email if Email ID is given
+                            if u_email:
+                                if send_credentials_email(u_email, u_name, u_pass):
+                                    st.info(f"📧 Login Details {u_email} पर भी भेज दी गई हैं।")
+
+                            # Generate WhatsApp Link if Mobile Number is given
+                            if u_mobile:
+                                app_link = "https://your-app-link.streamlit.app" # Apne deployed app ka link dalein
+                                wa_msg = f"नमस्ते {u_name},\n\nआपका Cashbook App का अकाउंट बन गया है।\n\n🔗 Application Link: {app_link}\n👤 User ID: {u_name}\n🔑 Password: {u_pass}\n\nधन्यवाद!"
+                                encoded_msg = urllib.parse.quote(wa_msg)
+                                wa_url = f"https://wa.me/91{u_mobile}?text={encoded_msg}"
+                                
+                                st.markdown(f"### 📲 WhatsApp Direct Send Link:\n[👉 यहाँ क्लिक करके {u_name} को WhatsApp पर Login Details भेजें]({wa_url})", unsafe_allow_html=True)
+                        
+                        except sqlite3.IntegrityError:
+                            st.error("❌ यह User ID पहले से मौजूद है! कृपया कोई दूसरा ID चुनें।")
+                    else:
+                        st.warning("⚠️ कृपया User ID और Password दोनों भरें!")
