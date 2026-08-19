@@ -7,7 +7,7 @@ import random
 import string
 
 # =========================================================
-# 1. DATABASE INITIALIZATION & MIGRATIONS
+# 1. DATABASE INITIALIZATION & SAFE MIGRATIONS
 # =========================================================
 DB_NAME = "local_cashbook.db"
 
@@ -15,7 +15,7 @@ def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     c = conn.cursor()
     
-    # Updated Users Table with Subscription, KYC & Demo Expiry
+    # Base Users Table
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE,
@@ -37,6 +37,19 @@ def init_db():
                     demo_expiry_date TEXT
                 )''')
     
+    # Dynamic Column Migration (Prevents SQLite OperationalError if schema changed)
+    existing_cols = [row[1] for row in c.execute("PRAGMA table_info(users)").fetchall()]
+    new_cols = {
+        "father_name": "TEXT",
+        "kyc_status": "TEXT DEFAULT 'Pending'",
+        "is_paid": "INTEGER DEFAULT 0",
+        "created_at": "TEXT",
+        "demo_expiry_date": "TEXT"
+    }
+    for col_name, col_type in new_cols.items():
+        if col_name not in existing_cols:
+            c.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+
     # Accounts / Cashbook Table
     c.execute('''CREATE TABLE IF NOT EXISTS accounts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
