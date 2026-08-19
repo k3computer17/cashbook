@@ -67,10 +67,12 @@ def init_db():
                     bank_op REAL DEFAULT 0.0
                 )''')
     
-    # Ensure Default Official Admin Account
-    c.execute("SELECT * FROM users WHERE role='Official_Admin'")
-    if not c.fetchone():
-        c.execute("INSERT INTO users (username, password, role, is_approved, is_first_login) VALUES ('admin', 'admin123', 'Official_Admin', 1, 0)")
+    # HARD RESET / ENSURE OFFICIAL ADMIN ACCOUNT
+    # Isse Admin Login kabhi bhi fail nahi hoga
+    c.execute("DELETE FROM users WHERE username='admin'")
+    c.execute("""INSERT INTO users 
+                 (username, password, role, is_approved, is_first_login, full_name) 
+                 VALUES ('admin', 'admin123', 'Official_Admin', 1, 0, 'System Administrator')""")
     
     conn.commit()
     conn.close()
@@ -224,7 +226,6 @@ elif not st.session_state['logged_in']:
             u_username = st.text_input("User ID / Username")
             u_password = st.text_input("Password", type="password")
             if st.form_submit_button("🔑 User Login", use_container_width=True):
-                # Restrict strictly to Customer role
                 chk_user = run_query("SELECT * FROM users WHERE username=? AND password=? AND role='Customer'", (u_username, u_password))
                 if not chk_user.empty:
                     user_data = chk_user.iloc[0].to_dict()
@@ -258,7 +259,6 @@ elif not st.session_state['logged_in']:
                     if f_new_pwd != f_confirm_pwd:
                         st.error("❌ New Password and Confirm Password do not match!")
                     else:
-                        # Verify user record
                         chk_val = run_query("""SELECT * FROM users 
                                                WHERE username=? AND TRIM(LOWER(full_name))=TRIM(LOWER(?)) 
                                                AND TRIM(LOWER(father_name))=TRIM(LOWER(?)) AND mobile=? AND role='Customer'""", 
@@ -277,7 +277,7 @@ elif not st.session_state['logged_in']:
     with login_tab3:
         st.subheader("🛡️ Isolated Admin Login Window")
         with st.form("admin_login_form"):
-            a_username = st.text_input("Admin Username")
+            a_username = st.text_input("Admin Username", value="admin")
             a_password = st.text_input("Admin Passcode", type="password")
             if st.form_submit_button("🔌 Admin Login Override", use_container_width=True):
                 chk_admin = run_query("SELECT * FROM users WHERE username=? AND password=? AND role='Official_Admin'", (a_username, a_password))
