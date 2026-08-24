@@ -5,7 +5,7 @@ def init_db():
     conn = sqlite3.connect('software_data.db')
     cursor = conn.cursor()
     
-    # users टेबल (email कॉलम के साथ)
+    # users टेबल
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
@@ -25,6 +25,7 @@ def init_db():
         )
     ''')
     
+    # cashbook टेबल
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cashbook (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,8 +36,9 @@ def init_db():
         )
     ''')
     
+    # ledger टेबल (यहाँ पहले गलती से NOTECE लिखा गया था)
     cursor.execute('''
-        CREATE TABLE IF NOTECE ledger (
+        CREATE TABLE IF NOT EXISTS ledger (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             account_name TEXT,
             date TEXT,
@@ -44,6 +46,7 @@ def init_db():
         )
     ''')
     
+    # id_cards टेबल
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS id_cards (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
