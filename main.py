@@ -1,4 +1,4 @@
-# main.py (Complete Streamlit Web Application)
+# main.py (Complete Updated Streamlit App)
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -36,37 +36,48 @@ if "logged_in" not in st.session_state:
 if not st.session_state.logged_in:
     st.title("🔐 Software Login")
     
-    # डिफ़ॉल्ट एडमिन बनाना
-    admin_obj.create_user_with_details(
-        name="System Admin", father_name="Admin", aadhar_last4="0000", 
-        mobile="9999999999", email="admin@software.com", address="Office", 
-        city="City", district="Dist", state="State", pin="000000", role="Admin"
-    )
+    # मास्टर एडमिन अकाउंट सुनिश्चित करना
+    try:
+        admin_obj.create_user_with_details(
+            name="System Admin", father_name="Admin", aadhar_last4="0000", 
+            mobile="9999999999", email="admin@software.com", address="Office", 
+            city="City", district="Dist", state="State", pin="000000", role="Admin"
+        )
+    except:
+        pass
 
     with st.form("login_form"):
-        u_id = st.text_input("User ID")
-        pwd = st.text_input("Password (One-Time Password if new)", type="password")
+        u_id = st.text_input("User ID (Default: admin)")
+        pwd = st.text_input("Password (Default: 1234 for main admin)", type="password")
         submit_login = st.form_submit_button("Login")
 
         if submit_login:
-            conn = sqlite3.connect('software_data.db')
-            cursor = conn.cursor()
-            cursor.execute("SELECT password, role, active FROM users WHERE user_id = ?", (u_id,))
-            result = cursor.fetchone()
-            conn.close()
-
-            if result:
-                db_pwd, role, active = result
-                if active == 1 and db_pwd == pwd:
-                    st.session_state.logged_in = True
-                    st.session_state.user_id = u_id
-                    st.session_state.role = role
-                    st.success(f"Welcome {u_id}!")
-                    st.rerun()
-                else:
-                    st.error("Account blocked or incorrect password!")
+            # मास्टर एडमिन के लिए त्वरित लॉगिन (User ID: admin, Password: 1234)
+            if u_id == "admin" and pwd == "1234":
+                st.session_state.logged_in = True
+                st.session_state.user_id = "admin"
+                st.session_state.role = "Admin"
+                st.success("Welcome Admin!")
+                st.rerun()
             else:
-                st.error("User ID not found!")
+                conn = sqlite3.connect('software_data.db')
+                cursor = conn.cursor()
+                cursor.execute("SELECT password, role, active FROM users WHERE user_id = ?", (u_id,))
+                result = cursor.fetchone()
+                conn.close()
+
+                if result:
+                    db_pwd, role, active = result
+                    if active == 1 and db_pwd == pwd:
+                        st.session_state.logged_in = True
+                        st.session_state.user_id = u_id
+                        st.session_state.role = role
+                        st.success(f"Welcome {u_id}!")
+                        st.rerun()
+                    else:
+                        st.error("Account blocked or incorrect password!")
+                else:
+                    st.error("User ID not found!")
 
 # --- 2. लॉगिन होने के बाद का पैनल ---
 else:
@@ -97,7 +108,7 @@ else:
 
         elif admin_menu == "➕ Create New User":
             st.title("➕ Create New User (Admin Panel)")
-            st.write("नए यूजर की पूरी जानकारी भरकर उसकी आईडी और पासवर्ड जनरेट करें:")
+            st.write("नए यूजर की पूरी जानकारी (नाम, पिता का नाम, मोबाइल, ईमेल आदि) भरकर उसकी आईडी और पासवर्ड जनरेट करें:")
 
             with st.form("new_user_form"):
                 col1, col2 = st.columns(2)
@@ -125,7 +136,7 @@ else:
                         if success:
                             st.success("User Created Successfully!")
                             st.info(f"**New User ID:** `{u_id}`")
-                            st.warning(f"**One-Time Password:** `{pwd}` (इसे नोट करके यूजर को दे दें)")
+                            st.warning(f"**One-Time Password:** `{pwd}` (इसे नोट करके सुरक्षित रख लें)")
                         else:
                             st.error(f"Error: {u_id}")
                     else:
