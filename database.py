@@ -1,20 +1,19 @@
-# database.py
+# database.py (Updated with Force Table Reset for Migration)
 import sqlite3
 
 def init_db():
     conn = sqlite3.connect('software_data.db')
     cursor = conn.cursor()
     
-    # पुरानी टेबल को हटाकर नए कॉलम के साथ फ्रेश टेबल बनाना
-    cursor.execute('DROP TABLE IF EXISTS users')
+    # पुरानी users टेबल को पूरी तरह हटाकर नए कॉलम्स के साथ दोबारा बनाना ताकि एरर कभी न आए
+    cursor.execute("DROP TABLE IF EXISTS users")
     
-    # users टेबल (सभी नई जानकारियों और ईमेल के साथ)
     cursor.execute('''
-        CREATE TABLE users (
+        CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL,
-            active INTEGER NOT NULL,
+            password TEXT,
+            role TEXT,
+            active INTEGER DEFAULT 1,
             name TEXT,
             father_name TEXT,
             aadhar_last4 TEXT,
@@ -27,8 +26,8 @@ def init_db():
             pin TEXT
         )
     ''')
-    
-    # cashbook टेबल
+
+    # Cashbook टेबल
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cashbook (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,8 +37,8 @@ def init_db():
             type TEXT
         )
     ''')
-    
-    # ledger टेबल
+
+    # Ledger टेबल
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ledger (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,20 +47,17 @@ def init_db():
             amount REAL
         )
     ''')
-    
-    # id_cards टेबल
+
+    # ID Card टेबल
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS id_cards (
+        CREATE TABLE IF NOT EXISTS idcards (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
             role TEXT,
-            id_number TEXT,
-            photo_path TEXT
+            id_num TEXT,
+            photo TEXT
         )
     ''')
-    
+
     conn.commit()
     conn.close()
-
-if __name__ == "__main__":
-    init_db()

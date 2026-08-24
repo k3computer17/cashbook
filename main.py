@@ -1,15 +1,71 @@
-# main.py (Complete Updated Streamlit App)
+# main.py (All-in-One Clean App without external admin.py dependency)
 import streamlit as st
 import sqlite3
 import pandas as pd
+import shutil
+import os
+from datetime import datetime
 from database import init_db
-from admin import Admin
 from auth import UserAuth
 from cashbook import CashBook
 from ledger import Ledger
 from dashboard import Dashboard
 from reports import ReportGenerator
 from idcard import IDCardGenerator
+
+# --- डायरेक्ट एडमिन क्लास (ताकि कोई एरर न आए) ---
+class AdminDirect:
+    def create_user_with_details(self, name, father_name, aadhar_last4, mobile, email, address, city, district, state, pin, role="User"):
+        conn = sqlite3.connect('software_data.db')
+        cursor = conn.cursor()
+        import random
+        rand_num = random.randint(1000, 9999)
+        user_id = f"USR{mobile[-4:]}{rand_num}" if mobile else f"USR{rand_num}"
+        one_time_password = f"OTP@{random.randint(1000, 9999)}"
+        
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO users (user_id, password, role, active, name, father_name, aadhar_last4, mobile, email, address, city, district, state, pin)
+                VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, one_time_password, role, name, father_name, aadhar_last4, mobile, email, address, city, district, state, pin))
+            conn.commit()
+            return True, user_id, one_time_password
+        except Exception as e:
+            return False, str(e), ""
+        finally:
+            conn.close()
+
+    def get_all_users(self):
+        conn = sqlite3.connect('software_data.db')
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT user_id, role, name, father_name, mobile, email, city, state FROM users")
+            rows = cursor.fetchall()
+        except Exception as e:
+            rows = []
+        finally:
+            conn.close()
+        return rows
+
+    def delete_user(self, user_id):
+        conn = sqlite3.connect('software_data.db')
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        return f"User {user_id} deleted successfully."
+
+# --- ऑटो-बैकअप सिस्टम ---
+def take_database_backup():
+    backup_dir = "database_backups"
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir)
+    today_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    backup_file = os.path.join(backup_dir, f"software_data_backup_{today_date}.db")
+    if os.path.exists("software_data.db"):
+        shutil.copy("software_data.db", backup_file)
+
+take_database_backup()
 
 # पेज की सेटिंग
 st.set_page_config(page_title="CashBook & ID Card Manager", page_icon="💼", layout="wide")
@@ -18,7 +74,7 @@ st.set_page_config(page_title="CashBook & ID Card Manager", page_icon="💼", la
 init_db()
 
 # ऑब्जेक्ट्स बनाएं
-admin_obj = Admin()
+admin_obj = AdminDirect()
 auth_obj = UserAuth()
 cb_obj = CashBook()
 ledger_obj = Ledger()
@@ -36,7 +92,6 @@ if "logged_in" not in st.session_state:
 if not st.session_state.logged_in:
     st.title("🔐 Software Login")
     
-    # मास्टर एडमिन अकाउंट सुनिश्चित करना
     try:
         admin_obj.create_user_with_details(
             name="System Admin", father_name="Admin", aadhar_last4="0000", 
@@ -52,7 +107,6 @@ if not st.session_state.logged_in:
         submit_login = st.form_submit_button("Login")
 
         if submit_login:
-            # मास्टर एडमिन के लिए त्वरित लॉगिन (User ID: admin, Password: 1234)
             if u_id == "admin" and pwd == "1234":
                 st.session_state.logged_in = True
                 st.session_state.user_id = "admin"
@@ -108,8 +162,6 @@ else:
 
         elif admin_menu == "➕ Create New User":
             st.title("➕ Create New User (Admin Panel)")
-            st.write("नए यूजर की पूरी जानकारी (नाम, पिता का नाम, मोबाइल, ईमेल आदि) भरकर उसकी आईडी और पासवर्ड जनरेट करें:")
-
             with st.form("new_user_form"):
                 col1, col2 = st.columns(2)
                 with col1:
@@ -150,7 +202,6 @@ else:
                 df = pd.DataFrame(users_data, columns=["User ID", "Role", "Name", "Father Name", "Mobile", "Email", "City", "State"])
                 st.dataframe(df)
                 
-                # Excel/CSV डाउनलोड बटन
                 csv = df.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="📥 Download Users List as Excel (CSV)",

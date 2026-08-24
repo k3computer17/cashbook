@@ -28,9 +28,13 @@ class Admin:
     def get_all_users(self):
         conn = sqlite3.connect('software_data.db')
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id, role, name, father_name, mobile, email, city, state FROM users")
-        rows = cursor.fetchall()
-        conn.close()
+        try:
+            cursor.execute("SELECT user_id, role, name, father_name, mobile, email, city, state FROM users")
+            rows = cursor.fetchall()
+        except Exception as e:
+            rows = []
+        finally:
+            conn.close()
         return rows
 
     def delete_user(self, user_id):
