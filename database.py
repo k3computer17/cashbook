@@ -5,9 +5,11 @@ def init_db():
     conn = sqlite3.connect('software_data.db')
     cursor = conn.cursor()
     
-    # अपडेटेड Users Table (सारी डिटेल्स के साथ)
+    # पुरानी टेबल को हटाकर नई अपडेटेड टेबल बनाना
+    cursor.execute('DROP TABLE IF EXISTS users')
+    
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE users (
             user_id TEXT PRIMARY KEY,
             password TEXT NOT NULL,
             role TEXT NOT NULL,
@@ -24,7 +26,6 @@ def init_db():
         )
     ''')
     
-    # बाकी टेबल्स वही रहेंगी...
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cashbook (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,3 +57,6 @@ def init_db():
     
     conn.commit()
     conn.close()
+
+if __name__ == "__main__":
+    init_db()
