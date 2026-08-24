@@ -5,9 +5,12 @@ def init_db():
     conn = sqlite3.connect('software_data.db')
     cursor = conn.cursor()
     
+    # पुरानी टेबल को हटाकर नए कॉलम के साथ फ्रेश टेबल बनाना
+    cursor.execute('DROP TABLE IF EXISTS users')
+    
     # users टेबल (सभी नई जानकारियों और ईमेल के साथ)
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE users (
             user_id TEXT PRIMARY KEY,
             password TEXT NOT NULL,
             role TEXT NOT NULL,
