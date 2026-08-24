@@ -5,17 +5,26 @@ def init_db():
     conn = sqlite3.connect('software_data.db')
     cursor = conn.cursor()
     
-    # 1. Users Table (Admin & User ID के लिए)
+    # अपडेटेड Users Table (सारी डिटेल्स के साथ)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
             password TEXT NOT NULL,
             role TEXT NOT NULL,
-            active INTEGER NOT NULL
+            active INTEGER NOT NULL,
+            name TEXT,
+            father_name TEXT,
+            aadhar_last4 TEXT,
+            mobile TEXT,
+            address TEXT,
+            city TEXT,
+            district TEXT,
+            state TEXT,
+            pin TEXT
         )
     ''')
     
-    # 2. CashBook Table (कैश बुक लेन-देन के लिए)
+    # बाकी टेबल्स वही रहेंगी...
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cashbook (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,7 +35,6 @@ def init_db():
         )
     ''')
     
-    # 3. Ledger Table (खाता बही के लिए)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ledger (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +44,6 @@ def init_db():
         )
     ''')
     
-    # 4. ID Cards Table (आईडी कार्ड डेटा के लिए)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS id_cards (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +56,3 @@ def init_db():
     
     conn.commit()
     conn.close()
-
-if __name__ == "__main__":
-    init_db()
-    print("Database and Tables created successfully!")
